@@ -23,7 +23,7 @@ npm run test:ui    # = npm run build && electron tests/ui/entry.mjs
 | `entry.mjs` | 测试专用的 Electron 主进程入口。注册 mock IPC、持有假数据、跑完整流程并打印结果 |
 | `harness.mjs` | 驱动与断言工具：建窗口、求值、轮询、滚动、取快照 |
 | `mock-preload.mjs` | `window.novelApi` 的替身，形状必须与 `electron/preload.mjs` 一致 |
-| `specs.mjs` | 7 条用例 |
+| `specs.mjs` | 10 条用例 |
 
 ### 关键设计
 
@@ -58,6 +58,9 @@ npm run test:ui    # = npm run build && electron tests/ui/entry.mjs
 | `theme-switch` | 四套主题的 `data-theme`、`--reader-bg` 计算值、选中态；四种背景色互不相同 |
 | `settings-persist` | **保存载荷**中 `books[0].settings.fontSize === 26`；reload 后字号与滑块仍是 26 |
 | `progress-persist` | 防抖保存了 `paragraphIndex > 0`；返回书架再打开，视口顶部段落索引与保存值相同 |
+| `toc-jump` | 识别出 10 个「第N章 …」标题；点击第 6 章后目录关闭，视口顶部**正是该章标题**；工具栏结构与几何（见该用例内的断言） |
+| `toc-active` | 用 `uneven` 夹具：跳转到第 5 章后目录高亮的必须是第 5 章；再由滚动路径把第 7 章标题滚到顶部，高亮须跟随 |
+| `toc-fallback` | 无空行文本被切分为 200 段；识别不到章节时不出列表、改出进度滑块，滑块 60% 对应约 60% 滚动位置 |
 
 ### 两个容易写错的地方
 
@@ -69,7 +72,7 @@ npm run test:ui    # = npm run build && electron tests/ui/entry.mjs
 
 ## 用例隔离
 
-每个用例开始前 `mock.reset(seed)` + `reload`。**顺序很关键**：`reload` 会让上一个用例的页面触发 `beforeunload`，而 `src/main.js` 在那里调用 `saveLibraryOnExit(library)`，把整份旧数据写回来。
+每个用例开始前 `mock.reset(library, variant)` + `reload`（`library` 由 `spec.seed` 决定，`variant` 由 `spec.text` 决定）。**顺序很关键**：`reload` 会让上一个用例的页面触发 `beforeunload`，而 `src/main.js` 在那里调用 `saveLibraryOnExit(library)`，把整份旧数据写回来。
 
 如果这次写入生效，下一个用例就会带着上一个用例的阅读进度和主题启动——恢复位置不再是 0，期望值也来自上一个用例，失败现场极难理解（这正是实现过程中真实踩到过的坑）。
 
@@ -88,6 +91,20 @@ paragraphs.findIndex(text => text.includes(progress.context.slice(0, 80)))
 ```
 
 段落开头若重复，恢复位置会命中错误的段落，测试将以难以理解的方式失败。
+
+### 三个变体
+
+`buildFixture()` 生成三份文本，由 `mock.reset(library, variant)` 选择：
+
+- `'chapters'`（默认）：每 20 段插入一个编号递增的「第N章 …」标题，分隔符 `\n\n`（空行分段）。
+- `'plain'`：无标题，分隔符 `\n`（一行一段、无空行）。
+- `'uneven'`：同 `'chapters'`，但每段末尾追加随编号增长的填充文字，**段落长度长短不一**。
+
+用例通过 `spec.text` 指定用哪一份。
+
+`'plain'` 同时覆盖两件事：段落切分必须兼容无空行格式（改动前整本会被解析成 1 个段落），以及章节识别失败时降级为百分比滑块。
+
+`'uneven'` 是为「目录高亮错章」这个 bug 加的，理由值得记住：**段落等长时，「滚动比例 × 段落数」这个估算恰好准确**，用它算当前章节永远不会错——也就是说，默认夹具会让这类缺陷完全隐形。真实小说的段落长短悬殊，误差沿全书累积，实测可偏十几章。凡是涉及「像素位置 ↔ 段落序号」换算的断言，都必须用 `'uneven'` 才有效。
 
 ---
 
