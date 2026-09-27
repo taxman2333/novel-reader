@@ -8,6 +8,7 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
     "build": "vite build",
     "test": "node --test",
+    "test:ui": "npm run build && electron tests/ui/entry.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "private": true,
