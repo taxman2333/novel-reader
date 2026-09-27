@@ -23,9 +23,10 @@
 ### 1.2 Electron 打包分发
 
 - **来源**：方案阶段五「完成打包运行」
-- **现状**：只有 `npm run build`（前端），无 `electron-builder` 等打包配置
-- **价值**：生成可脱离开发环境运行的桌面程序
-- **需要评估**：打包工具选型、是否只面向 Windows、是否需要安装包
+- **状态**：**已完成**（2026-09-27）。见 `docs/changes/2026-09-27-打包与发布Release.md`
+- **结果**：`npm run dist` 产出 `release/novel-reader-<version>-win-x64.zip`（Windows x64 免安装目录版，约 105MB），可作为 GitHub Release 附件分发。选型过程与被否决的替代方案记录在该方案文件中
+
+**后续可再评估**：自定义应用图标（当前沿用 Electron 默认图标）、NSIS 安装程序、macOS/Linux 打包、自动更新。这几项都不是 v1.0.0 方案的要求，属独立需求；其中自定义图标要动 `.gitignore` 的 `/build/` 规则，详见 `docs/PROJECT.md` 第 5.4 节末尾的提示。
 
 ### 1.3 大文本渲染优化
 

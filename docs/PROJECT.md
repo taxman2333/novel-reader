@@ -25,14 +25,14 @@
 
 | 项目 | 状态 |
 |---|---|
-| 版本 | v1.0.0（初始版本） |
+| 版本 | v1.0.0（`package.json` 与 `docs/CHANGELOG.md` 已对齐；此前 `package.json` 停在 `0.1.0`） |
 | 可运行性 | **可用**。`npm run dev` 可启动，导入、阅读、设置、进度恢复全流程已验证 |
 | 技术栈 | Electron 32.3.3 + Vite 5.4 + 原生 JavaScript / CSS |
 | 测试（单元） | `npm test` → 24 项全部通过 |
 | 测试（界面） | `npm run test:ui` → 10 项全部通过（真实 Electron 窗口驱动 `dist/`） |
-| 应用打包 | 仅完成前端构建（`npm run build` → `dist/`）。**尚未配置 Electron 打包分发** |
+| 应用打包 | **已配置**。`npm run dist` → `release/novel-reader-1.0.0-win-x64.zip`（Windows x64 免安装版，约 105MB）。详见第 5.4 节 |
 | Git | 本地仓库，分支 `master`，初始提交 `e67e742` |
-| 远程仓库 | `origin` → `https://github.com/taxman2333/novel-reader`（Private） |
+| 远程仓库 | `origin` → `https://github.com/taxman2333/novel-reader`（Private）。尚无 tag 与 Release |
 | 数据存储 | `library.json`，位于 Electron userData 目录。仅存路径与元数据 |
 
 ---
@@ -189,6 +189,35 @@ webPreferences: {
 | `book:read` | invoke | 按路径读取小说 |
 | `book:inspect` | invoke | 检查文件是否可用/变化 |
 
+### 5.4 打包与分发（真实）
+
+配置写在 `package.json` 的 `build` 字段。**不新建独立配置文件**——项目是 `"type": "module"`，独立配置需要处理 ESM 导出，写进 `package.json` 没有这个问题，也少一个文件。
+
+| 项 | 值 |
+|---|---|
+| `productName` | `书页之间`（exe 名、窗口与任务栏显示名） |
+| 目标 | `zip`，Windows x64 免安装目录版 |
+| 产物 | `release/novel-reader-<version>-win-x64.zip`（约 105MB）；中间产物 `release/win-unpacked/` |
+| `files` | `dist/**`、`electron/**`、`package.json` |
+| `asar` | `true` |
+| 命令 | `npm run dist`（= `npm run build && electron-builder --win`） |
+
+**为什么是 `zip` 而不是安装程序或单文件 exe**：解压双击即用、零依赖；不写注册表、不装进 `Program Files`，卸载等于删文件夹。`portable` 单文件每次启动都要把约 200MB 解压到 `%TEMP%`，启动明显更慢；NSIS 安装程序对一个自用工具过重。取舍过程见 `docs/changes/2026-09-27-打包与发布Release.md`。
+
+产物只作为 GitHub Release 附件上传，**不进 Git**（`.gitignore` 的 `/release/` 已覆盖，含 electron-builder 生成的 `builder-debug.yml`）。
+
+**压缩包文件名用 ASCII，包内 exe 仍是中文名**：含中文的压缩包名在部分解压工具与下载链路上有编码风险，ASCII 避开该问题，同时不影响用户实际使用的 exe 名称。
+
+⚠️ **`files` 是白名单，`node_modules` 不在其中。** 当前主进程只用 Node 内置模块（`node:path`、`node:fs` 等），编码解码用内置 `TextDecoder`，**不需要任何运行时依赖**，所以安全。若将来引入运行时依赖（非 devDependency），必须把 `node_modules/**` 加回 `files`，否则打包后启动即报模块找不到。
+
+⚠️ **`electron` 必须在 `devDependencies`。** electron-builder 直接拒绝 `electron` 出现在 `dependencies` 中（报 `Package "electron" is only allowed in "devDependencies"`）——打包产物自带 Electron 运行时，不依赖 npm 装的那个包。本项目原先把它放在 `dependencies`，打包时才发现。
+
+⚠️ **数据目录与产品显示名刻意解耦。** `electron/main.js` 在 `app ready` 之前显式执行 `app.setPath('userData', <appData>/local-novel-reader)`。原因：`app.getPath('userData')` 默认跟随 `app.getName()`，而 `app.getName()` 跟随 `build.productName`。若不显式固定，引入 `productName` 会让数据目录从 `%APPDATA%\local-novel-reader\` 变成 `%APPDATA%\书页之间\`，**老用户的书架会凭空变空**（文件没丢，但应用看不到）。显式 `setPath` 让开发态与打包态共用同一个目录，零迁移。
+
+**未做**：自定义图标（沿用 Electron 默认图标）、安装程序、跨平台打包、自动更新。均属独立需求，不在本次范围内。
+
+> 将来做自定义图标时注意：electron-builder 的默认图标查找路径是 `build/icon.ico`，而本仓库 `.gitignore` 有根锚定的 `/build/` 规则，**需同时调整该规则**，否则图标文件会被静默排除在 Git 之外。
+
 ---
 
 ## 6. 数据结构（真实）
@@ -337,4 +366,7 @@ webPreferences: {
 1. **本机 `github.com:443` 被阻断**，`api.github.com` 可直连。因此 `gh` 命令正常，但 `git push` 需要走本机代理。当前已在 `.git/config`（仅本仓库）设置 `http.proxy = http://127.0.0.1:7890`。代理未开启时推送会失败。
 2. **Electron 二进制安装在 Node 24 下可能失败**：其自带的 `extract-zip`/`yauzl` 会静默中断，导致 `dist/` 里只剩部分文件、`electron.exe` 缺失。可用 PowerShell 对已下载且校验通过的压缩包重新解压修复。
 3. 全局 Git 身份未配置（`user.name`/`user.email` 均为空）。本仓库已设置仓库级身份，**未修改全局配置**。
-4. 运行方式：`npm run dev` 开发启动；`npm run build` 前端构建；`npm test` 单元测试。**不要用浏览器打开 `127.0.0.1:5173`**，那是 Vite 资源服务，不是应用入口。
+4. 运行方式：`npm run dev` 开发启动；`npm run build` 前端构建；`npm test` 单元测试；`npm run test:ui` 界面回归测试；`npm run dist` 打包 Windows 应用。**不要用浏览器打开 `127.0.0.1:5173`**，那是 Vite 资源服务，不是应用入口。
+5. **打包必须走镜像**：electron-builder 默认从 github.com 拉取 Electron 运行时与工具链，本机该域名被阻断。仓库级 `.npmrc` 已设 `electron_mirror` 与 `electron_builder_binaries_mirror` 指向 npmmirror，`build.electronDownload.mirror` 作为第二道保险。**首次打包需下载约 200MB**，缓存在 `%LOCALAPPDATA%\electron-builder\Cache`，第二次起显著加快。
+6. **npm 会告警 `.npmrc` 里的镜像键**（`Unknown project config "electron_mirror"`）。**这不是错误**：这两个键是 `@electron/get` 的约定，由 npm 透传成 `npm_config_*` 环境变量供其读取，镜像实际生效（已实测打包成功）。npm 提示未来大版本可能不再透传，届时改用环境变量。
+7. **`gh release create` 不需要代理**：它走 `api.github.com` 与 `uploads.github.com`，两者均已实测可达。这与 `git push` 必须走本机代理的情况不同。
