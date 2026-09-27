@@ -7,6 +7,21 @@
 
 ---
 
+## [未发布] — 2026-09-27
+
+尚未构成版本号变更的工程与文档改动。**应用本身的行为没有变化。**
+
+### 新增
+
+- **界面回归测试**（`npm run test:ui`）：以真实 Electron 窗口驱动构建产物 `dist/`，7 条断言覆盖 `novelApi` 接口一致性、空书架引导、导入流程、滚动后工具栏固定、四套主题切换、设置持久化与阅读进度往返。通过 `electron tests/ui/entry.mjs` 绕过 `package.json` 的 `main` 字段启动，生产代码一行未改；替换点是 `contextBridge` 暴露的 `novelApi`。详见 `tests/ui/README.md`。
+- **项目文档体系**：`docs/PROJECT.md`（当前状态）、`docs/ROADMAP.md`（未来计划）、`docs/CHANGELOG.md`（历史变更）、`docs/changes/`（需求方案）、`docs/archive/`（版本快照），以及 `/change`、`/implement`、`/release`、`/github` 协作 Skills。
+
+### 修复
+
+- **`.gitignore` 误伤 Skills 目录**：构建产物规则 `release/` 不带前导斜杠时会匹配任意层级，导致 `.claude/skills/release/` 被静默排除在上传之外。已将 `dist/`、`out/`、`build/`、`release/` 四条规则锚定到仓库根目录。
+
+---
+
 ## [1.0.0] — 2026-09-27
 
 首个可用版本。基于 `docs/archive/v1.0.0-plan.md`（第一版项目规划方案）实现。

@@ -28,7 +28,8 @@
 | 版本 | v1.0.0（初始版本） |
 | 可运行性 | **可用**。`npm run dev` 可启动，导入、阅读、设置、进度恢复全流程已验证 |
 | 技术栈 | Electron 32.3.3 + Vite 5.4 + 原生 JavaScript / CSS |
-| 测试 | `npm test` → 12 项全部通过 |
+| 测试（单元） | `npm test` → 12 项全部通过 |
+| 测试（界面） | `npm run test:ui` → 7 项全部通过（真实 Electron 窗口驱动 `dist/`） |
 | 应用打包 | 仅完成前端构建（`npm run build` → `dist/`）。**尚未配置 Electron 打包分发** |
 | Git | 本地仓库，分支 `master`，初始提交 `e67e742` |
 | 远程仓库 | `origin` → `https://github.com/taxman2333/novel-reader`（Private） |
@@ -235,7 +236,7 @@ webPreferences: {
 
 ## 8. 测试现状
 
-`npm test`（`node --test`），共 12 项：
+### 单元测试 `npm test`（`node --test`），共 12 项
 
 | 文件 | 覆盖内容 |
 |---|---|
@@ -243,7 +244,21 @@ webPreferences: {
 | `tests/library-store.test.js` | 写入与主文件损坏后的备份恢复 |
 | `tests/store-reader.test.js` | 设置范围钳制、按书覆盖全局、书架归一化、按附近文本恢复、索引边界、设置跨保存重载、`normalizeLibrary` 会重建对象这一关键不变量 |
 
-**尚未建立**：界面级自动化测试、Electron 集成测试。已有的验证手段是临时性的隐藏窗口脚本，未纳入仓库。
+### 界面回归测试 `npm run test:ui`，共 7 项
+
+以真实 Electron 窗口驱动构建产物 `dist/`。入口是 `tests/ui/entry.mjs`，通过 `electron tests/ui/entry.mjs` 绕过 `package.json` 的 `main` 字段启动，**生产代码一行未改**。替换点是 `electron/preload.mjs` 暴露的 `novelApi`（`tests/ui/mock-preload.mjs`），渲染层分辨不出替身与真身，因此 `src/main.js`、`src/reader.js`、`src/styles.css` 的真实逻辑全部被保留。详见 `tests/ui/README.md`。
+
+| 用例 | 断言 |
+|---|---|
+| `api-surface` | `novelApi` 方法集合与 `electron/preload.mjs` 一致（检测 mock 漂移） |
+| `shelf-empty` | 空书架引导按钮确实绑定了导入事件 |
+| `import` | 导入后进入阅读页、正文非空、书架 1 条记录并显示书名 |
+| `toolbar-fixed` | 正文滚动 4000px 后工具栏 `top` 仍为 0 |
+| `theme-switch` | 四套主题的 `data-theme`、`--reader-bg` 计算值与选中态正确且互不相同 |
+| `settings-persist` | 保存载荷中 `books[0].settings.fontSize === 26`；reload 后字号与滑块仍为 26 |
+| `progress-persist` | 防抖保存 `paragraphIndex > 0`；返回书架再打开，视口顶部段落索引与保存值一致 |
+
+**尚未建立**：Electron 集成测试（直接启动 `electron/main.js`、走真实文件系统与 IPC）。界面测试替换掉了 `novelApi`，因此 `electron/main.js`、`electron/book-service.js`、`electron/library-store.js` 自身的接线不在覆盖范围内。
 
 ---
 
