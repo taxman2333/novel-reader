@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+
+# Build output and packaged applications
+dist/
+out/
+build/
+release/
+*.asar
+*.app/
+*.dmg
+*.exe
+*.msi
+*.zip
+
+# Logs and runtime output
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Local application data and user content
+.data/
+data/
+storage/
+user-data/
+novels/
+books/
+*.sqlite
+*.sqlite3
+*.db
+
+# Local personal configuration
+.vscode/settings.json
+.idea/
+*.local
+
+# Caches and temporary files
+.cache/
+.eslintcache
+.parcel-cache/
+.vite/
+tmp/
+temp/
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Electron tooling artifacts
+builder-effective-config.yaml

@@ -1,0 +1,22 @@
+{
+  "name": "local-novel-reader",
+  "version": "0.1.0",
+  "description": "A private local TXT novel reader.",
+  "main": "electron/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
+    "build": "vite build",
+    "test": "node --test",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "private": true,
+  "dependencies": {
+    "electron": "^32.2.7"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1",
+    "vite": "^5.4.8",
+    "wait-on": "^8.0.1"
+  }
+}
