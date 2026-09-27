@@ -66,6 +66,12 @@ h1, h2, h3, p { margin-top: 0; }
 .reader-toolbar { height: 68px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 0 34px; border-bottom: 1px solid var(--reader-rule); }
 .reader-toolbar > :last-child { justify-self: end; }
 .toolbar-button { color: var(--reader-muted); }
+/* justify-self 显式写出：不依赖「按钮有固定宽度，所以默认 stretch 撑不开」这一隐式行为 */
+.toolbar-left { display: flex; align-items: center; gap: 4px; justify-self: start; }
+.toolbar-actions { display: flex; align-items: center; gap: 4px; }
+/* .icon-button 是固定 36px 的圆形，装不下两个汉字。只覆盖尺寸相关的属性，
+   颜色、hover、过渡仍沿用 .icon-button。 */
+.toolbar-label-button { width: auto; min-width: 36px; padding: 0 14px; border-radius: 8px; font-size: 15px; }
 .reader-title { display: flex; align-items: baseline; gap: 13px; max-width: 50vw; }
 .reader-title strong { max-width: 42vw; overflow: hidden; font: 500 16px "Noto Serif SC", "SimSun", serif; text-overflow: ellipsis; white-space: nowrap; }
 .reader-title span { color: var(--reader-muted); font-size: 12px; }
@@ -78,19 +84,38 @@ h1, h2, h3, p { margin-top: 0; }
 .reading-progress span { display: block; width: 0; height: 100%; background: #84946e; transition: width .15s ease; }
 .file-change-notice { margin: 12px auto 0; width: min(var(--content-width), calc(100% - 56px)); color: var(--reader-muted); font-size: 12px; }
 
-.settings-scrim { position: fixed; inset: 0; z-index: 4; background: rgb(20 24 19 / 24%); }
-.settings-panel { position: fixed; z-index: 5; top: 0; right: 0; bottom: 0; width: 360px; padding: 30px; overflow: auto; color: #30352f; background: #faf9f5; box-shadow: -15px 0 50px rgb(20 28 20 / 12%); transform: translateX(100%); transition: transform .25s ease; }
-.reader-shell[data-theme="white"] .settings-panel { color: #303a34; background: #f7f8f6; }
-.reader-shell[data-theme="green"] .settings-panel { color: #304034; background: #e7eee3; }
-.reader-shell[data-theme="night"] .settings-panel { color: #dedfd9; background: #373a39; }
-.reader-shell[data-theme="night"] .settings-panel .setting-label,
-.reader-shell[data-theme="night"] .settings-panel .switch-row,
-.reader-shell[data-theme="night"] .settings-panel .theme-swatch,
-.reader-shell[data-theme="night"] .settings-panel .reset-button { color: #c2c8c0; }
-.reader-shell[data-theme="night"] .settings-panel .segmented-control { background: #292c2b; }
-.reader-shell[data-theme="night"] .settings-panel .segmented-control button.is-active { color: #e2e6df; background: #4a504a; }
-.reader-shell[data-theme="night"] .settings-panel .reset-button { border-color: rgb(220 225 215 / 14%); }
-.settings-panel.is-open { transform: translateX(0); }
+.panel-scrim { position: fixed; inset: 0; z-index: 4; background: rgb(20 24 19 / 24%); }
+.side-panel { position: fixed; z-index: 5; top: 0; right: 0; bottom: 0; width: 360px; padding: 30px; overflow: auto; color: #30352f; background: #faf9f5; box-shadow: -15px 0 50px rgb(20 28 20 / 12%); transform: translateX(100%); transition: transform .25s ease; }
+.reader-shell[data-theme="white"] .side-panel { color: #303a34; background: #f7f8f6; }
+.reader-shell[data-theme="green"] .side-panel { color: #304034; background: #e7eee3; }
+.reader-shell[data-theme="night"] .side-panel { color: #dedfd9; background: #373a39; }
+.reader-shell[data-theme="night"] .side-panel .setting-label,
+.reader-shell[data-theme="night"] .side-panel .switch-row,
+.reader-shell[data-theme="night"] .side-panel .theme-swatch,
+.reader-shell[data-theme="night"] .side-panel .reset-button { color: #c2c8c0; }
+.reader-shell[data-theme="night"] .side-panel .segmented-control { background: #292c2b; }
+.reader-shell[data-theme="night"] .side-panel .segmented-control button.is-active { color: #e2e6df; background: #4a504a; }
+.reader-shell[data-theme="night"] .side-panel .reset-button { border-color: rgb(220 225 215 / 14%); }
+.side-panel.is-open { transform: translateX(0); }
+/* 目录面板改为从左侧滑入。必须写在 .side-panel 之后：两者同为一类选择器（0,1,0），
+   关闭态由源码顺序决定谁生效。
+   right: auto 不是冗余——基类的 right: 0 与这里的 left: 0 同时存在属于过约束，
+   显式写出来才不依赖「LTR 下忽略 right」这条过约束解析规则。
+   不需要再写 .side-panel--left.is-open：.side-panel.is-open 是 (0,2,0)，特异性更高，
+   打开态必然生效。 */
+.side-panel--left { right: auto; left: 0; box-shadow: 15px 0 50px rgb(20 28 20 / 12%); transform: translateX(-100%); }
+.toc-count { margin: 0 0 14px; color: #87937f; font-size: 12px; }
+.toc-list { margin: 0; padding: 0; list-style: none; }
+.toc-item { width: 100%; padding: 9px 10px; overflow: hidden; color: #4c554c; border: 0; background: transparent; border-radius: 4px; font-size: 15px; line-height: 1.5; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.toc-item:hover { background: rgb(104 121 93 / 10%); }
+.toc-item.is-active { color: #3f523d; background: #eff2ea; font-weight: 500; }
+.toc-empty { margin-bottom: 26px; color: #6d756c; font-size: 13px; line-height: 1.8; }
+.toc-empty p { margin: 0; }
+.toc-hint { margin-top: 8px !important; color: #8b918a; font-size: 12px; }
+.reader-shell[data-theme="night"] .side-panel .toc-count,
+.reader-shell[data-theme="night"] .side-panel .toc-empty { color: #b3b9b1; }
+.reader-shell[data-theme="night"] .side-panel .toc-item { color: #c2c8c0; }
+.reader-shell[data-theme="night"] .side-panel .toc-item.is-active { color: #e2e6df; background: #4a504a; }
 .panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 30px; }
 .panel-header h2 { margin: 0; font: 500 23px "Noto Serif SC", "SimSun", serif; }
 .setting-group { display: block; margin: 0 0 26px; }
@@ -127,4 +152,4 @@ h1, h2, h3, p { margin-top: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; transition-duration: .001ms !important; } }
 @media (max-width: 1100px) { .shelf-shell { padding-inline: 5vw; } }
-@media (max-width: 700px) { body { min-width: 0; } .shelf-shell { padding: 32px 24px 48px; } .shelf-header { margin-bottom: 42px; align-items: flex-start; flex-direction: column; } .shelf-header h1 { font-size: 38px; } .book-row { gap: 10px; } .book-spine { width: 48px; height: 66px; font-size: 22px; } .book-main { gap: 13px; } .book-details { display: block; } .book-details small { display: block; margin-top: 5px; text-align: left; } .progress-track { display: inline-block; margin-top: 12px; } .book-details em { margin-left: 7px; } .reader-toolbar { padding: 0 16px; } .reader-content { width: calc(100% - 36px); padding-top: 45px; } .settings-panel { width: min(360px, 100%); } }
+@media (max-width: 700px) { body { min-width: 0; } .shelf-shell { padding: 32px 24px 48px; } .shelf-header { margin-bottom: 42px; align-items: flex-start; flex-direction: column; } .shelf-header h1 { font-size: 38px; } .book-row { gap: 10px; } .book-spine { width: 48px; height: 66px; font-size: 22px; } .book-main { gap: 13px; } .book-details { display: block; } .book-details small { display: block; margin-top: 5px; text-align: left; } .progress-track { display: inline-block; margin-top: 12px; } .book-details em { margin-left: 7px; } .reader-toolbar { padding: 0 16px; } .reader-content { width: calc(100% - 36px); padding-top: 45px; } .side-panel { width: min(360px, 100%); } }

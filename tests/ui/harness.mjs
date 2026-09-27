@@ -163,11 +163,15 @@ export async function scrollReaderTo(win, top) {
 export async function topParagraphIndex(win) {
   return evaluate(win, `
     const scroll = document.querySelector('#reader-scroll');
-    if (!scroll) return { index: -1, count: 0 };
+    if (!scroll) return { index: -1, count: 0, text: null };
     const top = scroll.getBoundingClientRect().top;
     const items = [...document.querySelectorAll('#reader-content p')];
     const found = items.find((el) => el.getBoundingClientRect().bottom > top + 2);
-    return { index: found ? Number(found.dataset.paragraphIndex) : -1, count: items.length };
+    return {
+      index: found ? Number(found.dataset.paragraphIndex) : -1,
+      count: items.length,
+      text: found ? found.textContent : null,
+    };
   `);
 }
 

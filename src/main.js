@@ -1,6 +1,6 @@
 import './styles.css';
 import { DEFAULT_SETTINGS, THEMES, createBookRecord, normalizeLibrary, normalizeSettings, resolveBookSettings } from './store.js';
-import { findRestoreIndex, getProgressFromScroll, parseParagraphs, restoreScroll } from './reader.js';
+import { detectChapters, findRestoreIndex, getProgressFromScroll, parseParagraphs, restoreScroll } from './reader.js';
 
 const api = window.novelApi;
 const app = document.querySelector('#app');
@@ -8,6 +8,10 @@ let library = normalizeLibrary(null);
 let activeBook = null;
 let activeContent = null;
 let paragraphs = [];
+let chapters = [];
+let activeChapter = -1;
+let activeChapterItem = null;
+let chapterRefreshFrame = 0;
 let scrollSaveTimer = null;
 let toastTimer = null;
 
@@ -124,6 +128,9 @@ async function openBook(bookId, loadedFile = null) {
     activeBook = book;
     activeContent = file;
     paragraphs = parseParagraphs(file.text);
+    chapters = detectChapters(paragraphs);
+    activeChapter = -1;
+    activeChapterItem = null;
     const changed = book.fingerprint && book.fingerprint !== file.fingerprint;
     book.unavailable = false;
     book.lastOpenedAt = new Date().toISOString();
@@ -146,12 +153,17 @@ function renderReader(contentChanged = false) {
   app.innerHTML = `
     <main class="reader-shell" data-theme="${settings.theme}">
       <header class="reader-toolbar">
-        <button class="icon-button toolbar-button" id="back-to-shelf" title="返回书架" aria-label="返回书架">←</button>
+        <div class="toolbar-left">
+          <button class="icon-button toolbar-button" id="back-to-shelf" title="返回书架" aria-label="返回书架">←</button>
+          <button class="icon-button toolbar-button toolbar-label-button" id="open-toc" title="目录" aria-label="目录">目录</button>
+        </div>
         <div class="reader-title">
           <strong>${escapeHtml(activeBook.name)}</strong>
           <span id="reading-percent">${Math.round((activeBook.progress?.ratio || 0) * 100)}%</span>
         </div>
-        <button class="icon-button toolbar-button" id="open-settings" title="阅读设置" aria-label="阅读设置">Aa</button>
+        <div class="toolbar-actions">
+          <button class="icon-button toolbar-button" id="open-settings" title="阅读设置" aria-label="阅读设置">Aa</button>
+        </div>
       </header>
       ${contentChanged ? '<p class="file-change-notice">原文件内容有变化，已按上次位置尽量恢复。</p>' : ''}
       <section class="reader-scroll" id="reader-scroll" tabindex="0">
@@ -160,6 +172,7 @@ function renderReader(contentChanged = false) {
         </article>
       </section>
       <div class="reading-progress" aria-hidden="true"><span id="reading-progress-bar"></span></div>
+      ${renderTocPanel()}
       ${renderSettingsPanel(settings)}
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -175,10 +188,46 @@ function renderParagraphs() {
   return paragraphs.map(({ text, index }) => `<p data-paragraph-index="${index}">${escapeHtml(text)}</p>`).join('');
 }
 
+function renderTocPanel() {
+  return `
+    <div class="panel-scrim" id="toc-scrim" hidden></div>
+    <aside class="side-panel side-panel--left" id="toc-panel" aria-labelledby="toc-title" aria-hidden="true">
+      <div class="panel-header">
+        <h2 id="toc-title">目录</h2>
+        <button class="icon-button" id="close-toc" aria-label="关闭目录">×</button>
+      </div>
+      ${chapters.length ? renderChapterList() : renderTocFallback()}
+    </aside>
+  `;
+}
+
+function renderChapterList() {
+  return `
+    <p class="toc-count">共 ${chapters.length} 章</p>
+    <ol class="toc-list" id="toc-list">
+      ${chapters.map((chapter) => `
+        <li><button class="toc-item" data-chapter-index="${chapter.index}" title="${escapeAttribute(chapter.title)}">${escapeHtml(chapter.title)}</button></li>
+      `).join('')}
+    </ol>
+  `;
+}
+
+// 章节识别失败时的降级：不阻断阅读，至少提供按进度定位的手段。
+function renderTocFallback() {
+  const percent = Math.round((activeBook.progress?.ratio || 0) * 100);
+  return `
+    <div class="toc-empty">
+      <p>这本书没有识别到「第X章」形式的章节标题。</p>
+      <p class="toc-hint">可以按阅读进度大致定位，也可以直接关闭本面板继续阅读。</p>
+    </div>
+    <label class="setting-group range-row"><span class="setting-label">按进度跳转<output id="toc-percent-output">${percent}%</output></span><input id="toc-percent" type="range" min="0" max="100" step="1" value="${percent}"></label>
+  `;
+}
+
 function renderSettingsPanel(settings) {
   return `
-    <div class="settings-scrim" id="settings-scrim" hidden></div>
-    <aside class="settings-panel" id="settings-panel" aria-labelledby="settings-title" aria-hidden="true">
+    <div class="panel-scrim" id="settings-scrim" hidden></div>
+    <aside class="side-panel" id="settings-panel" aria-labelledby="settings-title" aria-hidden="true">
       <div class="panel-header">
         <h2 id="settings-title">阅读设置</h2>
         <button class="icon-button" id="close-settings" aria-label="关闭阅读设置">×</button>
@@ -216,15 +265,37 @@ function bindReaderEvents() {
     activeBook = null;
     activeContent = null;
     paragraphs = [];
+    chapters = [];
+    activeChapter = -1;
+    activeChapterItem = null;
     renderShelf();
   });
-  document.querySelector('#open-settings').addEventListener('click', () => toggleSettings(true));
-  document.querySelector('#close-settings').addEventListener('click', () => toggleSettings(false));
-  document.querySelector('#settings-scrim').addEventListener('click', () => toggleSettings(false));
+  document.querySelector('#open-settings').addEventListener('click', () => togglePanel('settings', true));
+  document.querySelector('#close-settings').addEventListener('click', () => togglePanel('settings', false));
+  document.querySelector('#settings-scrim').addEventListener('click', () => togglePanel('settings', false));
+  document.querySelector('#open-toc').addEventListener('click', () => {
+    togglePanel('toc', true);
+    refreshActiveChapter(true);
+  });
+  document.querySelector('#close-toc').addEventListener('click', () => togglePanel('toc', false));
+  document.querySelector('#toc-scrim').addEventListener('click', () => togglePanel('toc', false));
+  document.querySelectorAll('#toc-list [data-chapter-index]').forEach((button) => {
+    button.addEventListener('click', () => jumpToChapter(Number(button.dataset.chapterIndex)));
+  });
+  const percentInput = document.querySelector('#toc-percent');
+  if (percentInput) {
+    percentInput.addEventListener('input', () => {
+      const scroll = document.querySelector('#reader-scroll');
+      const ratio = Number(percentInput.value) / 100;
+      scroll.scrollTop = ratio * Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+      document.querySelector('#toc-percent-output').textContent = `${percentInput.value}%`;
+    });
+  }
   const scroll = document.querySelector('#reader-scroll');
   scroll.addEventListener('scroll', () => {
     const progress = getProgressFromScroll(scroll, paragraphs);
     updateProgressUi(progress.ratio);
+    scheduleActiveChapterRefresh();
     clearTimeout(scrollSaveTimer);
     scrollSaveTimer = setTimeout(() => saveCurrentProgress(progress), 500);
   }, { passive: true });
@@ -326,12 +397,95 @@ async function persistLibrary() {
   await api.saveLibrary(library);
 }
 
-function toggleSettings(open) {
-  const panel = document.querySelector('#settings-panel');
-  const scrim = document.querySelector('#settings-scrim');
-  panel.classList.toggle('is-open', open);
-  panel.setAttribute('aria-hidden', String(!open));
-  scrim.hidden = !open;
+// 目录与阅读设置共用同一个抽屉形态，同时只允许打开一个。
+const PANEL_IDS = { settings: 'settings-panel', toc: 'toc-panel' };
+
+function togglePanel(name, open) {
+  for (const [key, id] of Object.entries(PANEL_IDS)) {
+    const isOpen = open && key === name;
+    const panel = document.querySelector(`#${id}`);
+    const scrim = document.querySelector(`#${id.replace('-panel', '-scrim')}`);
+    panel.classList.toggle('is-open', isOpen);
+    panel.setAttribute('aria-hidden', String(!isOpen));
+    scrim.hidden = !isOpen;
+  }
+}
+
+// 视口顶部所属的章节序号。章节按 paragraphIndex 递增，取最后一个不超过当前段落的。
+function currentChapterIndex(paragraphIndex) {
+  let found = -1;
+  for (let i = 0; i < chapters.length; i += 1) {
+    if (chapters[i].paragraphIndex > paragraphIndex) break;
+    found = i;
+  }
+  return found;
+}
+
+// 视口顶部所在段落的真实索引。
+//
+// 不能用 getProgressFromScroll() 的「比例 × 段落数」估算：那个估算假定段落等高，
+// 而真实小说的段落长度差异很大（对话密集段与长描写段可以差好几倍），误差会沿全书
+// 累积。实测一本段落长度递增的合成书，跳到第 5 章时估算落在第 3 章——跳转后目录
+// 高亮的章节明显不对。保存阅读进度用估算还可以接受（恢复时首先按上下文精确匹配），
+// 但高亮必须准确，否则用户一眼就能看出错。
+//
+// 段落是正常流的块级元素，bottom 沿文档顺序单调递增，因此可以二分查找：
+// 数千段也只需约 12 次 getBoundingClientRect，且首次读取已强制布局，后续读取
+// 不再触发。调用点见 scheduleActiveChapterRefresh()——滚动期间收敛到每帧最多一次。
+function topParagraphIndex(scroll) {
+  const items = scroll.querySelectorAll('#reader-content p');
+  if (!items.length) return -1;
+  const top = scroll.getBoundingClientRect().top + 2;
+  let low = 0;
+  let high = items.length - 1;
+  let found = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (items[mid].getBoundingClientRect().bottom > top) {
+      found = mid;
+      high = mid - 1;
+    } else {
+      low = mid + 1;
+    }
+  }
+  return found < 0 ? -1 : Number(items[found].dataset.paragraphIndex);
+}
+
+// 滚动事件一帧内可以触发多次，而测量几何会强制同步布局。
+// 收敛到每帧最多测一次：既不会漏掉用户能看见的变化，也不会在同一帧里反复触发布局。
+function scheduleActiveChapterRefresh() {
+  if (chapterRefreshFrame) return;
+  chapterRefreshFrame = requestAnimationFrame(() => {
+    chapterRefreshFrame = 0;
+    refreshActiveChapter();
+  });
+}
+
+// 高亮当前章节。只在章节变化时改 DOM。
+function refreshActiveChapter(reveal = false) {
+  if (!chapters.length) return;
+  const scroll = document.querySelector('#reader-scroll');
+  if (!scroll) return;
+  const next = currentChapterIndex(topParagraphIndex(scroll));
+  if (next !== activeChapter) {
+    if (activeChapterItem) activeChapterItem.classList.remove('is-active');
+    activeChapter = next;
+    activeChapterItem = document.querySelector(`#toc-list [data-chapter-index="${next}"]`);
+    if (activeChapterItem) activeChapterItem.classList.add('is-active');
+  }
+  // 只在面板打开时滚动列表，避免在阅读过程中无谓地动面板里的滚动位置。
+  if (reveal && activeChapterItem) activeChapterItem.scrollIntoView({ block: 'nearest' });
+}
+
+function jumpToChapter(index) {
+  const chapter = chapters[index];
+  if (!chapter) return;
+  const target = document.querySelector(`#reader-content [data-paragraph-index="${chapter.paragraphIndex}"]`);
+  if (!target) return;
+  // 必须显式 instant：.reader-scroll 的 scroll-behavior 是 smooth，
+  // 跨几百章的平滑滚动会变成一次漫长的连锁动画。
+  target.scrollIntoView({ block: 'start', behavior: 'instant' });
+  togglePanel('toc', false);
 }
 
 function renderLoading(name) {

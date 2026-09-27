@@ -31,23 +31,43 @@ const FIXTURE_FINGERPRINT = 'c0ffee1234567890abcdef01';
 // src/reader.js 的 findRestoreIndex() 优先按上下文匹配
 // （paragraphs.findIndex(text => text.includes(progress.context.slice(0, 80)))），
 // 段落开头若重复，恢复位置会命中错误段落，测试将以难以理解的方式失败。
-const FIXTURE_TEXT = (() => {
+//
+// chapters：每 20 段插入一个「第N章 …」标题，编号递增，
+//           满足 detectChapters 的序列合理性检查。
+// separator：'\n\n' 是常见的空行分段；'\n' 是一行一段的无空行文件。
+// uneven：段落长度随编号增长，模拟长短段分布不均的真实小说。
+//         段落等长时，「比例 × 段落数」的估算恰好准确，会把高亮错章的 bug 完全掩盖——
+//         这个变体就是为此存在的。
+function buildFixture({ chapters = true, separator = '\n\n', uneven = false } = {}) {
   const paragraphs = [];
+  const filler = '填充文字用于制造段落之间的长度差异，使各段高度明显不同。';
   for (let i = 1; i <= 200; i += 1) {
     const marker = String(i).padStart(4, '0');
-    paragraphs.push(
-      `段落${marker} 这是界面回归测试使用的合成文本，不包含任何真实小说内容。`
-      + `第${marker}段继续填充文字，用于制造足够的滚动高度，使正文可以滚动超过四千像素。`,
-    );
+    if (chapters && (i - 1) % 20 === 0) paragraphs.push(`第${i}章 合成测试章节${marker}`);
+    const body = `段落${marker} 这是界面回归测试使用的合成文本，不包含任何真实小说内容。`
+      + `第${marker}段继续填充文字，用于制造足够的滚动高度，使正文可以滚动超过四千像素。`;
+    // 追加的填充放在末尾，不影响「前 80 字唯一」这一约束。
+    paragraphs.push(uneven ? body + filler.repeat(1 + Math.round(i / 8)) : body);
   }
-  return paragraphs.join('\n\n');
-})();
+  return paragraphs.join(separator);
+}
+
+const FIXTURE_TEXT = buildFixture();
+// 无空行、无章节标题：同时覆盖「段落切分自动兼容」（改动前整本会被解析成
+// 一个段落）与「目录识别失败降级为百分比滑块」两条验收标准。
+const PLAIN_TEXT = buildFixture({ chapters: false, separator: '\n' });
+// 段落长度不均、含章节标题：用于断言目录高亮的章节正确。
+const UNEVEN_TEXT = buildFixture({ uneven: true });
+
+const FIXTURE_TEXTS = { chapters: FIXTURE_TEXT, plain: PLAIN_TEXT, uneven: UNEVEN_TEXT };
 
 function createMock() {
   const state = {
     library: null,
     saves: [],
     chooseQueue: [],
+    // 'chapters' → 含章节标题的空行分段文本；'plain' → 无空行、无章节标题。
+    variant: 'chapters',
     // 见 reset() 的说明：只有「已经读取过当前这份数据」的页面才允许写回。
     armed: false,
     calls: { loadLibrary: 0, saveLibrary: 0, saveOnExit: 0, droppedSaveOnExit: 0, removeBook: 0, chooseBook: 0, readBook: 0, inspectBook: 0 },
@@ -60,7 +80,7 @@ function createMock() {
     name: FIXTURE_NAME,
     size: FIXTURE_SIZE,
     modifiedAt: FIXTURE_MODIFIED,
-    text: FIXTURE_TEXT,
+    text: FIXTURE_TEXTS[state.variant] || FIXTURE_TEXT,
     encoding: 'utf-8',
     fingerprint: FIXTURE_FINGERPRINT,
   });
@@ -87,10 +107,11 @@ function createMock() {
     }],
   });
 
-  function reset(library) {
+  function reset(library, variant = 'chapters') {
     state.library = clone(library || emptyLibrary());
     state.saves = [];
     state.chooseQueue = [];
+    state.variant = variant;
     // 用例之间靠 reload 隔离，但 reload 会让上一个用例的页面触发 beforeunload，
     // 而 src/main.js 在那里调用 saveLibraryOnExit(library)，把整份旧数据写回来。
     // 如果 reset 之后的这份数据被它覆盖，下一个用例就会带着上一个用例的阅读进度

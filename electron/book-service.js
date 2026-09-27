@@ -55,11 +55,21 @@ export function normalizeText(text) {
     .trim();
 }
 
+// 分隔策略与 src/reader.js 的 parseParagraphs 保持一致，两处必须同步修改。
+// 彻底合并这份重复实现属于 ROADMAP 第三节的独立技术债，不夹带在此。
+const BLANK_LINE_THRESHOLD = 0.15;
+
+function splitIntoBlocks(normalized) {
+  const lines = normalized.split('\n');
+  const blankRatio = lines.filter((line) => !line.trim()).length / lines.length;
+  return normalized.split(blankRatio >= BLANK_LINE_THRESHOLD ? /\n\s*\n+/ : /\n+/);
+}
+
 export function splitParagraphs(text) {
   const normalized = normalizeText(text);
   const paragraphs = [];
   let cursor = 0;
-  for (const rawParagraph of normalized.split(/\n\s*\n+/)) {
+  for (const rawParagraph of splitIntoBlocks(normalized)) {
     const paragraph = rawParagraph.replace(/\n+/g, '').trim();
     if (!paragraph) continue;
     const charOffset = normalized.indexOf(rawParagraph, cursor);
