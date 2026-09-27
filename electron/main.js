@@ -6,6 +6,15 @@ import { fileStillMatches, readTxtFile } from './book-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.argv.includes('--dev');
+
+// 数据目录名固定为 local-novel-reader，与产品显示名「书页之间」刻意解耦。
+// app.getPath('userData') 默认跟随 app.getName()，而 app.getName() 跟随 package.json
+// 的 productName。一旦让两者联动，改名或引入 productName 都会把老用户的 library.json
+// 留在旧目录，表现为「升级后书架凭空变空」。显式 setPath 让开发态与打包态共用同一个目录。
+// 必须在 app ready 之前调用才生效，取 appData 而非硬编码路径是为了不引入本机个人路径。
+const USER_DATA_DIR_NAME = 'local-novel-reader';
+app.setPath('userData', path.join(app.getPath('appData'), USER_DATA_DIR_NAME));
+
 let mainWindow;
 let store;
 

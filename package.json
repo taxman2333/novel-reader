@@ -1,23 +1,51 @@
 {
   "name": "local-novel-reader",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "A private local TXT novel reader.",
+  "author": "taxman2333",
   "main": "electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
     "build": "vite build",
+    "dist": "npm run build && electron-builder --win",
     "test": "node --test",
     "test:ui": "npm run build && electron tests/ui/entry.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "private": true,
-  "dependencies": {
-    "electron": "^32.2.7"
-  },
   "devDependencies": {
     "concurrently": "^9.0.1",
+    "electron": "^32.2.7",
+    "electron-builder": "^26.15.3",
     "vite": "^5.4.8",
     "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.taxman2333.novelreader",
+    "productName": "书页之间",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "asar": true,
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "novel-reader-${version}-win-x64.zip"
+    }
   }
 }
