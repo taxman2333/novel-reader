@@ -32,7 +32,7 @@
 | 测试（界面） | `npm run test:ui` → 10 项全部通过（真实 Electron 窗口驱动 `dist/`） |
 | 应用打包 | **已配置**。`npm run dist` → `release/novel-reader-1.0.0-win-x64.zip`（Windows x64 免安装版，约 105MB）。详见第 5.4 节 |
 | Git | 本地仓库，分支 `master`，初始提交 `e67e742` |
-| 远程仓库 | `origin` → `https://github.com/taxman2333/novel-reader`（Private）。尚无 tag 与 Release |
+| 远程仓库 | `origin` → `https://github.com/taxman2333/novel-reader`（Private）。**已发布 `v1.0.0` Release**（tag `v1.0.0`，附件 `novel-reader-1.0.0-win-x64.zip`） |
 | 数据存储 | `library.json`，位于 Electron userData 目录。仅存路径与元数据 |
 
 ---
