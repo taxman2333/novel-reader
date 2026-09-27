@@ -2,10 +2,12 @@
 node_modules/
 
 # Build output and packaged applications
-dist/
-out/
-build/
-release/
+# 锚定到仓库根目录：不加前导斜杠时 release/ 会连带匹配 .claude/skills/release/，
+# 导致 /release skill 被静默排除在上传之外。其余三个同理。
+/dist/
+/out/
+/build/
+/release/
 *.asar
 *.app/
 *.dmg
