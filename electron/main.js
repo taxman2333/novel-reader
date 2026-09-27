@@ -15,6 +15,12 @@ const isDev = process.argv.includes('--dev');
 const USER_DATA_DIR_NAME = 'local-novel-reader';
 app.setPath('userData', path.join(app.getPath('appData'), USER_DATA_DIR_NAME));
 
+// 窗口与任务栏图标。用 __dirname 回溯到应用根：开发态是仓库根目录，打包后是 app.asar 内，
+// 两种情况下 design/app-icon/final/icon.ico 都处在同一个相对位置，所以同一个表达式两边都成立。
+// 图标同时被 package.json 的 build.files 白名单收录 —— 不加进去的话开发态正常、打包态找不到文件。
+// 打包产物的 exe 图标另由 build.win.icon 在构建时嵌入，不走这里。
+const APP_ICON = path.join(__dirname, '..', 'design', 'app-icon', 'final', 'icon.ico');
+
 let mainWindow;
 let store;
 
@@ -87,6 +93,7 @@ function createWindow() {
     height: 900,
     minWidth: 920,
     minHeight: 640,
+    icon: APP_ICON,
     backgroundColor: '#f1ede4',
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),

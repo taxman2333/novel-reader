@@ -2,9 +2,12 @@
 
 「书页之间」的 Windows 桌面应用图标。
 
-**状态：设计已完成，尚未接入应用。** 本目录是纯新增，`package.json`、`electron/main.js`、
-`electron-builder` 配置都**没有改动**，打包产物目前仍沿用 Electron 默认图标。
-是否接入、何时接入由用户确认后再做（接入方式见文末）。
+**状态：设计已完成，并已接入应用**（2026-09-28，v1.0.1）。exe 与窗口都使用
+`final/icon.ico`，打包产物不再沿用 Electron 默认图标。接入方式与实际改动见文末，
+完整记录见 `docs/changes/2026-09-28-应用图标接入.md`。
+
+本目录是**设计资产与一次性生成工具**，不参与应用构建流程 —— 构建只取 `final/icon.ico`
+这一个文件。
 
 ---
 
@@ -128,15 +131,25 @@ node design/app-icon/tools/build-ico.mjs             # PNG → icon.ico
 npx electron design/app-icon/tools/contact-sheet.mjs # 生成对比图
 ```
 
-## 接入方式（尚未执行）
+## 接入方式（已于 2026-09-28 执行）
 
-打包配置用的是 electron-builder 默认的图标查找路径 `build/icon.ico`，而 `/build/` 在
-`.gitignore` 里（第 9 行，锚定仓库根目录）。**直接把图标放进 `build/` 会被静默排除在上传之外。**
+**没有走 electron-builder 默认的图标查找路径 `build/icon.ico`** —— `/build/` 在 `.gitignore`
+里（第 9 行，锚定仓库根目录），把图标放进那里会被静默排除在上传之外。改用显式路径，
+`.gitignore` 无需改动。
 
-两条路，推荐第二条：
+实际改动三处：
 
-1. 把 `icon.ico` 复制到 `build/`，并把 `.gitignore` 里的 `/build/` 改成只忽略构建产物；
-2. 保持 `/build/` 不动，在 `package.json` 的 `build.win` 里显式指向本目录：
-   `"icon": "design/app-icon/final/icon.ico"`。
+| 位置 | 值 | 作用 |
+|---|---|---|
+| `package.json` → `build.win.icon` | `design/app-icon/final/icon.ico` | **构建期**读取，把图标嵌进 exe 资源段 |
+| `package.json` → `build.files` | 增加 `design/app-icon/final/icon.ico` | 让 `.ico` 真的进 `app.asar` |
+| `electron/main.js` → `BrowserWindow.icon` | `path.join(__dirname, '..', 'design', 'app-icon', 'final', 'icon.ico')` | **运行时**读取，窗口自身图标 |
 
-另外 `electron/main.js` 创建 `BrowserWindow` 时没有传 `icon`，窗口与任务栏图标也需要一并补上。
+⚠️ **第二行是最容易漏的。** `BrowserWindow.icon` 是运行时读取，文件不在 asar 里就读不到；
+漏掉的表现是**开发态图标正常、打包后退回默认图标，而且构建过程一声不吭**。
+
+路径用 `__dirname` 回溯而不是写死绝对路径：开发态 `__dirname` 是仓库的 `electron/`，
+打包态是 `app.asar/electron/`，该相对位置两边都成立，**同一个表达式通用，图标只保留一份**。
+
+exe 图标是否真的换掉了，可以通过解析 PE 资源段的 `RT_GROUP_ICON` 逐项比对来确认，
+方法记录在 `docs/changes/2026-09-28-应用图标接入.md`。

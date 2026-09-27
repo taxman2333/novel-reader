@@ -1,6 +1,6 @@
 {
   "name": "local-novel-reader",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A private local TXT novel reader.",
   "author": "taxman2333",
   "main": "electron/main.js",
@@ -30,6 +30,7 @@
     "files": [
       "dist/**",
       "electron/**",
+      "design/app-icon/final/icon.ico",
       "package.json"
     ],
     "asar": true,
@@ -37,6 +38,7 @@
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
     "win": {
+      "icon": "design/app-icon/final/icon.ico",
       "target": [
         {
           "target": "zip",

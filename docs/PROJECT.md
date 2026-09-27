@@ -8,8 +8,8 @@
 > - 历史版本快照 → `docs/archive/`
 > - 代码历史 → Git
 
-**当前版本**：v1.0.0
-**最后更新**：2026-09-27
+**当前版本**：v1.0.1
+**最后更新**：2026-09-28
 
 ---
 
@@ -25,14 +25,15 @@
 
 | 项目 | 状态 |
 |---|---|
-| 版本 | v1.0.0（`package.json` 与 `docs/CHANGELOG.md` 已对齐；此前 `package.json` 停在 `0.1.0`） |
+| 版本 | v1.0.1（`package.json` 与 `docs/CHANGELOG.md` 已对齐；此前 `package.json` 停在 `0.1.0`） |
 | 可运行性 | **可用**。`npm run dev` 可启动，导入、阅读、设置、进度恢复全流程已验证 |
 | 技术栈 | Electron 32.3.3 + Vite 5.4 + 原生 JavaScript / CSS |
 | 测试（单元） | `npm test` → 24 项全部通过 |
 | 测试（界面） | `npm run test:ui` → 10 项全部通过（真实 Electron 窗口驱动 `dist/`） |
-| 应用打包 | **已配置**。`npm run dist` → `release/novel-reader-1.0.0-win-x64.zip`（Windows x64 免安装版，约 105MB）。详见第 5.4 节 |
+| 应用打包 | **已配置**。`npm run dist` → `release/novel-reader-1.0.1-win-x64.zip`（Windows x64 免安装版，约 105MB）。详见第 5.4 节 |
+| 应用图标 | **已接入**。`design/app-icon/final/icon.ico`，exe 由 `build.win.icon` 在构建时嵌入，窗口由 `BrowserWindow.icon` 在运行时读取。详见第 5.4 节 |
 | Git | 本地仓库，分支 `master`，初始提交 `e67e742` |
-| 远程仓库 | `origin` → `https://github.com/taxman2333/novel-reader`（Private）。**已发布 `v1.0.0` Release**（tag `v1.0.0`，附件 `novel-reader-1.0.0-win-x64.zip`） |
+| 远程仓库 | `origin` → `https://github.com/taxman2333/novel-reader`（Private）。**最新 Release 为 `v1.0.0`**（tag `v1.0.0`，附件 `novel-reader-1.0.0-win-x64.zip`）；`v1.0.1` 已打包，**尚未发 Release** |
 | 数据存储 | `library.json`，位于 Electron userData 目录。仅存路径与元数据 |
 
 ---
@@ -198,8 +199,9 @@ webPreferences: {
 | `productName` | `书页之间`（exe 名、窗口与任务栏显示名） |
 | 目标 | `zip`，Windows x64 免安装目录版 |
 | 产物 | `release/novel-reader-<version>-win-x64.zip`（约 105MB）；中间产物 `release/win-unpacked/` |
-| `files` | `dist/**`、`electron/**`、`package.json` |
+| `files` | `dist/**`、`electron/**`、`design/app-icon/final/icon.ico`、`package.json` |
 | `asar` | `true` |
+| `win.icon` | `design/app-icon/final/icon.ico`（构建时嵌入 exe 资源段） |
 | 命令 | `npm run dist`（= `npm run build && electron-builder --win`） |
 
 **为什么是 `zip` 而不是安装程序或单文件 exe**：解压双击即用、零依赖；不写注册表、不装进 `Program Files`，卸载等于删文件夹。`portable` 单文件每次启动都要把约 200MB 解压到 `%TEMP%`，启动明显更慢；NSIS 安装程序对一个自用工具过重。取舍过程见 `docs/changes/2026-09-27-打包与发布Release.md`。
@@ -214,9 +216,11 @@ webPreferences: {
 
 ⚠️ **数据目录与产品显示名刻意解耦。** `electron/main.js` 在 `app ready` 之前显式执行 `app.setPath('userData', <appData>/local-novel-reader)`。原因：`app.getPath('userData')` 默认跟随 `app.getName()`，而 `app.getName()` 跟随 `build.productName`。若不显式固定，引入 `productName` 会让数据目录从 `%APPDATA%\local-novel-reader\` 变成 `%APPDATA%\书页之间\`，**老用户的书架会凭空变空**（文件没丢，但应用看不到）。显式 `setPath` 让开发态与打包态共用同一个目录，零迁移。
 
-**未做**：自定义图标（沿用 Electron 默认图标）、安装程序、跨平台打包、自动更新。均属独立需求，不在本次范围内。
+⚠️ **图标要同时配两处，漏一处不会报错。** `build.win.icon` 是**构建期**读取，负责把图标嵌进 exe 的资源段（资源管理器、任务栏、开始菜单看到的）；`BrowserWindow.icon` 是**运行时**读取，负责窗口自身（主要是开发态可见）。后者要求文件真的在 asar 里，所以 `files` 白名单必须收录它——**不加白名单的表现是开发态图标正常、打包后退回默认图标，且构建过程一声不吭**。运行时路径写成 `path.join(__dirname, '..', 'design', 'app-icon', 'final', 'icon.ico')`：开发态 `__dirname` 是仓库的 `electron/`，打包态是 `app.asar/electron/`，该相对位置两边都成立，**同一个表达式通用，图标只保留一份**。
 
-> 将来做自定义图标时注意：electron-builder 的默认图标查找路径是 `build/icon.ico`，而本仓库 `.gitignore` 有根锚定的 `/build/` 规则，**需同时调整该规则**，否则图标文件会被静默排除在 Git 之外。
+⚠️ **没有走 electron-builder 默认的 `build/icon.ico`。** 本仓库 `.gitignore` 有根锚定的 `/build/` 规则，把图标放进那里会被静默排除在 Git 之外。改用显式路径 `design/app-icon/final/icon.ico` 避开，`.gitignore` 无需改动。图标的设计说明、三个备选方案与生成脚本见 `design/app-icon/README.md`。
+
+**未做**：安装程序、跨平台打包、自动更新。均属独立需求，不在本次范围内。
 
 ---
 
