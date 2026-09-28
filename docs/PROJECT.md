@@ -30,14 +30,14 @@
 | 技术栈 | Electron 32.3.3 + Vite 5.4 + 原生 JavaScript / CSS |
 | 测试（单元） | `npm test` → 37 项全部通过 |
 | 测试（界面） | `npm run test:ui` → 13 项全部通过（真实 Electron 窗口驱动 `dist/`） |
-| 应用打包 | **已配置**。`npm run dist` → `release/novel-reader-1.0.2-win-x64.zip`（Windows x64 免安装版，109,364,143 字节，2026-09-28 打包）。**尚未推送，也未发 Release**。详见第 5.4 节 |
+| 应用打包 | **已配置**。`npm run dist` → `release/novel-reader-1.0.2-win-x64.zip`（Windows x64 免安装版，109,364,143 字节，2026-09-28 打包并发布）。详见第 5.4 节 |
 | 应用图标 | **已接入**。`design/app-icon/final/icon.ico`，exe 由 `build.win.icon` 在构建时嵌入，窗口由 `BrowserWindow.icon` 在运行时读取。详见第 5.4 节 |
 | 性能基准 | `npm run bench` → `tools/bench-reader.mjs`。可重跑的阅读性能测量脚本，数据见 `docs/changes/2026-09-28-阅读性能优化.md` |
 | 大文本渲染 | **已窗口化**（2026-09-28）。DOM 里始终只有约 401 段，屏幕外由垫片撑高。改一次字号/版心宽度实测 79k 段 691.6→6.8 ms、134k 段 869.4→5.0 ms（基准的同步排版部分） |
 | 阅读页滚动条 | **已改为自绘**（2026-09-28）。原生滚动条在 600 万 px 的文档上滑块只有 0.1px、抓不住也用不了，故整条隐藏、换成自绘（滑块下限 24px，拖动按全书比例定位，滚轮/键盘保持原生）。见第 4.4.2 节 |
 | 待用户实测确认 | 打开/导入的端到端耗时、滚动体感、恢复位置 5×2 次往返、`library.json` 字节级不变、退出保存落地。这五项**基准与自动化测试都无法替代你的实测**，依据见 `docs/changes/2026-09-28-阅读性能优化.md` 验收标准 |
 | Git | 本地仓库，分支 `master`，初始提交 `e67e742` |
-| 远程仓库 | `origin` → `https://github.com/taxman2333/novel-reader`（Private）。**最新 Release 为 `v1.0.1`**（tag `v1.0.1` @ `540c523`，附件 `novel-reader-1.0.1-win-x64.zip`）；`v1.0.0` 为上一版 |
+| 远程仓库 | `origin` → `https://github.com/taxman2333/novel-reader`（Private）。**最新 Release 为 `v1.0.2`**（tag `v1.0.2` @ `5430323`，附件 `novel-reader-1.0.2-win-x64.zip`）；`v1.0.1`、`v1.0.0` 为历史版本 |
 | 数据存储 | `library.json`，位于 Electron userData 目录。存路径与元数据，另含恢复阅读位置所需的约 240 字「附近文本」（见第 3 节核心约束 1，2026-09-28 放宽） |
 
 ---
