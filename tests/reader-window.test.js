@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOffsetTable, estimateParagraphHeight, findParagraphAtOffset } from '../src/reader.js';
+import { buildOffsetTable, CHAPTER_SCALE, estimateParagraphHeight, findParagraphAtOffset } from '../src/reader.js';
 
 // 与 src/styles.css 的默认排版一致（见 src/store.js 的 DEFAULT_SETTINGS）。
 const LAYOUT = {
@@ -15,8 +15,13 @@ const LAYOUT = {
 const LINE = LAYOUT.fontSize * LAYOUT.lineHeight;
 const GAP = LAYOUT.paragraphSpacing * LAYOUT.fontSize;
 
-function heightFor(text, layout = LAYOUT) {
-  return estimateParagraphHeight(text, layout);
+// 章节标题按放大后的字号排：行高与段间距都跟着走（段间距是 em）。
+const TITLE_SIZE = LAYOUT.fontSize * CHAPTER_SCALE;
+const TITLE_LINE = TITLE_SIZE * LAYOUT.lineHeight;
+const TITLE_GAP = LAYOUT.paragraphSpacing * TITLE_SIZE;
+
+function heightFor(text, layout = LAYOUT, chapter = false) {
+  return estimateParagraphHeight(text, layout, chapter);
 }
 
 test('estimates a single line for a short paragraph', () => {
@@ -54,6 +59,24 @@ test('first-line indent costs room on the first line only', () => {
 test('never estimates less than one line', () => {
   assert.equal(heightFor(''), LINE + GAP);
   assert.equal(heightFor('', { ...LAYOUT, paragraphSpacing: 0 }), LINE);
+});
+
+test('estimates chapter titles at the enlarged size, without a first-line indent', () => {
+  const title = '第1章 合成测试章节0001';
+  assert.equal(heightFor(title, LAYOUT, true), TITLE_LINE + TITLE_GAP, '标题一行按放大后的行高与段间距算');
+  assert.ok(
+    heightFor(title, LAYOUT, true) > heightFor(title, LAYOUT),
+    '同一段文字作为标题时应比作为正文更高',
+  );
+  // 居中 → 没有段首缩进，关掉「段首缩进」开关也不该影响它。
+  assert.equal(heightFor(title, { ...LAYOUT, indent: false }, true), heightFor(title, LAYOUT, true));
+});
+
+test('the enlarged title fits fewer characters per line', () => {
+  // 18px 正文一行 39 字（见上），1.3 倍后 720 / (23.4 × 1.015) → 30 字。
+  // 标题没有缩进，所以首行就是满行。这里钉住倍率确实作用到了换行边界上。
+  assert.equal(heightFor('字'.repeat(30), LAYOUT, true), TITLE_LINE + TITLE_GAP, '30 字仍是一行');
+  assert.equal(heightFor('字'.repeat(31), LAYOUT, true), 2 * TITLE_LINE + TITLE_GAP, '31 字要换行');
 });
 
 test('describes a paragraph that needs an empty offset table', () => {

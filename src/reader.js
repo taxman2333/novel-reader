@@ -89,6 +89,11 @@ const REBUILD_PAD = 50;
 const LETTER_SPACING_EM = 0.015;
 const INDENT_EM = 2;
 
+// 章节标题的字号倍率，与 src/styles.css 的 .reader-content p.reader-chapter 保持一致。
+// 标题是居中且不缩进的独立段落，这里推算它的高度时必须跟着换字号：屏幕外的段落只有
+// 估算高度，倍率两边若不一致，偏出来的高度会累积成偏移表里的误差，跳章节就落不准。
+export const CHAPTER_SCALE = 1.3;
+
 const SPACER_TOP = '<div class="reader-spacer" data-spacer="top" aria-hidden="true"></div>';
 const SPACER_BOTTOM = '<div class="reader-spacer" data-spacer="bottom" aria-hidden="true"></div>';
 
@@ -99,11 +104,15 @@ export function escapeHtml(value) {
 // 段落高度估算。段落是等宽流式块，占几行只取决于「一行放得下几个字」，
 // 乘行高再加段间距就是整段高度。真实排版里还有标点压缩、中英文混排等差异，
 // 所以这只是估值——渲染出来后会被实测值替换，偏差不会累积。
-export function estimateParagraphHeight(text, layout) {
-  const { fontSize, lineHeight, paragraphSpacing, contentWidth, indent } = layout;
+//
+// `chapter` 为 true 时按章节标题排：字号乘以 CHAPTER_SCALE，不缩进（居中）。
+// 段间距是 em，跟着元素自己的字号走，所以这里换成放大后的字号才对得上。
+export function estimateParagraphHeight(text, layout, chapter = false) {
+  const { lineHeight, paragraphSpacing, contentWidth, indent } = layout;
+  const fontSize = chapter ? layout.fontSize * CHAPTER_SCALE : layout.fontSize;
   const perLine = Math.max(1, Math.floor(contentWidth / (fontSize * (1 + LETTER_SPACING_EM))));
-  // 段首缩进占掉首行开头的一小块，等价于少放两个汉字。
-  const firstLine = Math.max(1, perLine - (indent ? INDENT_EM : 0));
+  // 段首缩进占掉首行开头的一小块，等价于少放两个汉字。标题居中，没有这一块。
+  const firstLine = chapter ? perLine : Math.max(1, perLine - (indent ? INDENT_EM : 0));
   const length = text.length;
   const lines = length <= firstLine ? 1 : 1 + Math.ceil((length - firstLine) / perLine);
   return lines * fontSize * lineHeight + paragraphSpacing * fontSize;
@@ -150,8 +159,12 @@ export function findParagraphAtOffset(offsets, y) {
 }
 
 // 窗口管理器。只碰它自己那两块垫片和窗口内的段落，其余状态都在这里。
-export function createParagraphWindow({ scroll, content, paragraphs }) {
+export function createParagraphWindow({ scroll, content, paragraphs, chapterIndexes = null }) {
   const count = paragraphs.length;
+  // 章节标题的段落序号。渲染时要按它加类名，重估全书时要按它换字号，
+  // 因此这里存一份 Set，两处查表都是 O(1)。
+  const titles = chapterIndexes instanceof Set ? chapterIndexes : new Set(chapterIndexes || []);
+  const isChapter = (i) => titles.has(i);
   const heights = new Float64Array(count);
   let layout = { fontSize: 18, lineHeight: 1.9, paragraphSpacing: 0.9, contentWidth: 720, indent: true };
   let offsets = buildOffsetTable(heights);
@@ -174,7 +187,9 @@ export function createParagraphWindow({ scroll, content, paragraphs }) {
   // 改字号或版心宽度会让所有估算同时失效，因此每次排版参数变化都要重跑一遍。
   function reestimate() {
     layout.contentWidth = content.clientWidth;
-    for (let i = 0; i < count; i += 1) heights[i] = estimateParagraphHeight(paragraphs[i].text, layout);
+    for (let i = 0; i < count; i += 1) {
+      heights[i] = estimateParagraphHeight(paragraphs[i].text, layout, isChapter(i));
+    }
     offsets = buildOffsetTable(heights, contentBase());
   }
 
@@ -206,7 +221,8 @@ export function createParagraphWindow({ scroll, content, paragraphs }) {
     end = Math.min(count, anchorIndex + WINDOW_MARGIN + 1);
     const parts = [];
     for (let i = start; i < end; i += 1) {
-      parts.push(`<p data-paragraph-index="${i}">${escapeHtml(paragraphs[i].text)}</p>`);
+      const cls = isChapter(i) ? ' class="reader-chapter"' : '';
+      parts.push(`<p${cls} data-paragraph-index="${i}">${escapeHtml(paragraphs[i].text)}</p>`);
     }
     content.innerHTML = `${SPACER_TOP}${parts.join('')}${SPACER_BOTTOM}`;
 
@@ -222,7 +238,15 @@ export function createParagraphWindow({ scroll, content, paragraphs }) {
     const base = offsets[0];
     nodes[0].style.height = `${Math.max(0, offsets[start] - base)}px`;
     nodes[nodes.length - 1].style.height = `${Math.max(0, offsets[count] - offsets[end])}px`;
-    scroll.scrollTop = Math.max(0, offsets[anchorIndex] - anchorViewportOffset);
+    const target = Math.max(0, offsets[anchorIndex] - anchorViewportOffset);
+    scroll.scrollTop = target;
+    // scrollTop 会被浏览器按设备像素取整（这里是向下取整），实际落点可能比目标低 1px。
+    // 偏移表里是浮点高度，读侧那半像素容差（OFFSET_EPSILON）挡不住这一整像素：
+    // 实测过一次——改字号后视口顶部退到了上一段，正是这里要防的「改完设置就不知道读到哪了」。
+    // 写完就地核对一次：落到上一段就把这一像素补回来。
+    if (findParagraphAtOffset(offsets, scroll.scrollTop) < anchorIndex) {
+      scroll.scrollTop = target + 1;
+    }
     rendered = true;
   }
 

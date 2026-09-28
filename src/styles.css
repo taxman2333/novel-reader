@@ -104,6 +104,10 @@ h1, h2, h3, p { margin-top: 0; }
 .reader-content p { margin: 0 0 var(--paragraph-gap); text-indent: 2em; color: var(--reader-text); font: var(--reader-font-size)/var(--reader-line-height) "Noto Serif SC", "SimSun", serif; letter-spacing: .015em; }
 .reader-shell[data-font="sans"] .reader-content p { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
 .reader-shell[data-indent="false"] .reader-content p { text-indent: 0; }
+/* 章节标题：比正文大一号并居中。倍率与 src/reader.js 的 CHAPTER_SCALE 必须一致
+   （屏幕外段落的高度按它估算），居中则决定了没有段首缩进——text-indent 会把
+   居中后的那一行往右推。 */
+.reader-content p.reader-chapter { font-size: calc(var(--reader-font-size) * 1.3); text-align: center; text-indent: 0; }
 .reading-progress { height: 3px; background: var(--reader-rule); }
 .reading-progress span { display: block; width: 0; height: 100%; background: #84946e; transition: width .15s ease; }
 .file-change-notice { margin: 12px auto 0; width: min(var(--content-width), calc(100% - 56px)); color: var(--reader-muted); font-size: 12px; }

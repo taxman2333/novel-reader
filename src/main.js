@@ -208,6 +208,8 @@ function renderReader(contentChanged = false) {
     scroll: document.querySelector('#reader-scroll'),
     content: document.querySelector('#reader-content'),
     paragraphs,
+    // 目录已经算好了章节标题落在哪些段落上，窗口按它加类名（大字号 + 居中）。
+    chapterIndexes: new Set(chapters.map((chapter) => chapter.paragraphIndex)),
   });
   paragraphWindow.setLayout(readerLayout(settings));
   // 恢复阅读位置：把目标段落对齐到视口顶部。窗口会围着它重建，

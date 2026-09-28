@@ -31,6 +31,10 @@ function assertTrue(value, label) {
   if (!value) throw new Error(label);
 }
 
+// 正文段落。章节标题带 .reader-chapter，字号比正文大 30% 且居中（见 src/styles.css），
+// 所以「正文字号」这类断言必须显式排除它——夹具的首段恰好就是章节标题。
+const BODY_PARAGRAPH = "#reader-content p:not(.reader-chapter)";
+
 // 从书架进入第一本书的阅读页。所有阅读器相关的断言都从这里出发。
 async function openFirstBook(win) {
   await ui.waitFor(win, "return Boolean(document.querySelector('.book-main'));", { label: '书架出现可打开的书籍' });
@@ -203,7 +207,7 @@ const SPECS = [
       await ui.click(win, '#open-settings');
       await ui.setRange(win, '#fontSize-setting', 26);
       await ui.waitFor(win, `
-        const p = document.querySelector('#reader-content p');
+        const p = document.querySelector('${BODY_PARAGRAPH}');
         return p ? getComputedStyle(p).fontSize === '26px' : false;
       `, { label: '字号应即时生效为 26px' });
 
@@ -222,7 +226,7 @@ const SPECS = [
       await openFirstBook(win);
 
       const after = await ui.evaluate(win, `
-        const p = document.querySelector('#reader-content p');
+        const p = document.querySelector('${BODY_PARAGRAPH}');
         return {
           fontSize: p ? getComputedStyle(p).fontSize : null,
           slider: document.querySelector('#fontSize-setting')?.value ?? null,
@@ -324,7 +328,7 @@ const SPECS = [
       await ui.click(win, '#open-settings');
       await ui.setRange(win, '#fontSize-setting', 26);
       await ui.waitFor(win, `
-        const p = document.querySelector('#reader-content p');
+        const p = document.querySelector('${BODY_PARAGRAPH}');
         return p ? getComputedStyle(p).fontSize === '26px' : false;
       `, { label: '字号应即时生效为 26px' });
       // 字号一改，段高估算和整个窗口都要重来；视口顶部那一段必须还在原处，
@@ -562,6 +566,58 @@ const SPECS = [
         throw new Error(`${error.message}，实际顶部为「${top?.text}」`);
       }
 
+      // ── 章节标题的排版 ──────────────────────────────────────────────
+      // 跳过来之后视口顶部那一段就是标题本体，正好在这里量它的实际样式。
+      // 夹具里正文段落一律以「段落0001」开头，标题一律是「第N章 …」，
+      // 因此用文本就能把两类分开，逐段核对类名有没有加对。
+      const typography = await ui.evaluate(win, `
+        const items = [...document.querySelectorAll('#reader-content p')];
+        const landed = items.find((el) => Number(el.dataset.paragraphIndex) === ${top.index});
+        const body = items.find((el) => !el.classList.contains('reader-chapter'));
+        const content = document.querySelector('#reader-content');
+        const style = getComputedStyle(landed);
+        const bodyStyle = getComputedStyle(body);
+        // 段落是块级元素，它自己的 rect 恒占满版心——文字到底居没居中，
+        // 只能用 Range 量文字本身的盒子。
+        const range = document.createRange();
+        range.selectNodeContents(landed);
+        const textRect = range.getBoundingClientRect();
+        const contentRect = content.getBoundingClientRect();
+        const mismatched = items.filter(
+          (el) => /^第\\d+章 /.test(el.textContent) !== el.classList.contains('reader-chapter'),
+        );
+        return {
+          isChapter: landed.classList.contains('reader-chapter'),
+          className: landed.className,
+          fontSize: parseFloat(style.fontSize),
+          bodyFontSize: parseFloat(bodyStyle.fontSize),
+          align: style.textAlign,
+          indent: style.textIndent,
+          bodyIndent: bodyStyle.textIndent,
+          textMid: Math.round((textRect.left + textRect.right) / 2),
+          contentMid: Math.round((contentRect.left + contentRect.right) / 2),
+          mismatched: mismatched.length,
+          sample: mismatched.length ? mismatched[0].textContent.slice(0, 20) : null,
+        };
+      `);
+      assertTrue(typography.isChapter, `落地段落应是章节标题，实际 class="${typography.className}"`);
+      assertTrue(
+        Math.abs(typography.fontSize / typography.bodyFontSize - 1.3) < 0.01,
+        `标题字号应比正文大 30%，实际标题 ${typography.fontSize}px / 正文 ${typography.bodyFontSize}px`,
+      );
+      assertEqual(typography.align, 'center', '章节标题应居中');
+      assertEqual(typography.indent, '0px', '章节标题不应有段首缩进（会把居中后的那一行推右）');
+      assertEqual(typography.bodyIndent, '36px', '正文段首缩进仍应是 2em = 36px');
+      assertTrue(
+        Math.abs(typography.textMid - typography.contentMid) <= 2,
+        `标题文字应与版心同轴，实际文字中心 ${typography.textMid}、版心中心 ${typography.contentMid}`,
+      );
+      assertEqual(
+        typography.mismatched,
+        0,
+        `窗口内每段「第N章 …」都应带章节样式，实际有 ${typography.mismatched} 段没有（如「${typography.sample}」）`,
+      );
+
       // ── 阅读设置面板不应被牵连 ──────────────────────────────────────
       // .side-panel--left 只加在目录面板上，这条断言把「改错了对象」钉死。
       // 右侧面板同样有滑入过渡，比较放在页面内做才能每轮取到新值。
@@ -572,7 +628,8 @@ const SPECS = [
         return Math.round(el.getBoundingClientRect().right) === window.innerWidth;
       `, { label: '阅读设置面板应仍从右侧滑出（right 应等于视口宽度）' });
 
-      return `${list.count} 章（${list.fontSize}）；目录面板左滑（left=${openRect.left}）；点击「${expected}」后顶部为该章标题`;
+      return `${list.count} 章（${list.fontSize}）；目录面板左滑（left=${openRect.left}）；点击「${expected}」后顶部为该章标题`
+        + `；标题 ${typography.fontSize}px / 正文 ${typography.bodyFontSize}px、居中且无缩进`;
     },
   },
 
