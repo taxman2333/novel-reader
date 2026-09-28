@@ -16,7 +16,7 @@
 
 界面用网页技术（HTML/CSS/JavaScript）构建，以 Electron 本地桌面应用形式运行。**不依赖服务器、账号或云服务。**
 
-**当前版本 v1.0.0**，技术栈 Electron + Vite + 原生 JS/CSS，可用状态见 `docs/PROJECT.md`。
+**当前版本 v1.0.2**，技术栈 Electron + Vite + 原生 JS/CSS，可用状态见 `docs/PROJECT.md`。
 
 ---
 
