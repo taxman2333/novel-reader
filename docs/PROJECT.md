@@ -30,7 +30,7 @@
 | 技术栈 | Electron 32.3.3 + Vite 5.4 + 原生 JavaScript / CSS |
 | 测试（单元） | `npm test` → 37 项全部通过 |
 | 测试（界面） | `npm run test:ui` → 13 项全部通过（真实 Electron 窗口驱动 `dist/`） |
-| 应用打包 | **已配置**。`npm run dist` → `release/novel-reader-1.0.2-win-x64.zip`（Windows x64 免安装版，约 105MB）。**v1.0.2 尚未打包**，`release/` 里最新的是 `novel-reader-1.0.1-win-x64.zip`。详见第 5.4 节 |
+| 应用打包 | **已配置**。`npm run dist` → `release/novel-reader-1.0.2-win-x64.zip`（Windows x64 免安装版，109,364,143 字节，2026-09-28 打包）。**尚未推送，也未发 Release**。详见第 5.4 节 |
 | 应用图标 | **已接入**。`design/app-icon/final/icon.ico`，exe 由 `build.win.icon` 在构建时嵌入，窗口由 `BrowserWindow.icon` 在运行时读取。详见第 5.4 节 |
 | 性能基准 | `npm run bench` → `tools/bench-reader.mjs`。可重跑的阅读性能测量脚本，数据见 `docs/changes/2026-09-28-阅读性能优化.md` |
 | 大文本渲染 | **已窗口化**（2026-09-28）。DOM 里始终只有约 401 段，屏幕外由垫片撑高。改一次字号/版心宽度实测 79k 段 691.6→6.8 ms、134k 段 869.4→5.0 ms（基准的同步排版部分） |
