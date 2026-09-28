@@ -14,6 +14,11 @@ let activeChapterItem = null;
 let chapterRefreshFrame = 0;
 let scrollSaveTimer = null;
 let toastTimer = null;
+// 正文段落的缓存 NodeList。见 topParagraphIndex() 的说明。
+let paragraphNodes = null;
+// 设置类改动合并到下一帧、落盘防抖。见 scheduleReaderSettingsApply()。
+let settingsFrame = 0;
+let persistTimer = null;
 
 async function initialize() {
   if (!api) {
@@ -21,8 +26,12 @@ async function initialize() {
     return;
   }
   library = normalizeLibrary(await api.loadLibrary());
-  await checkBookAvailability();
+  // 先渲染书架再检查文件可用性：检查要对每本书做一次 stat 的 IPC 往返，
+  // 书架里书多时会把首帧一直推迟到全部检查完成之后。先出界面，再补上失效标记。
   renderShelf();
+  await checkBookAvailability();
+  // 检查期间用户可能已经点进某本书，此时不能把他拉回书架。
+  if (!activeBook) renderShelf();
 }
 
 async function checkBookAvailability() {
@@ -31,6 +40,7 @@ async function checkBookAvailability() {
 }
 
 function renderShelf() {
+  paragraphNodes = null;
   applyTheme(library.settings.theme);
   app.innerHTML = `
     <main class="shelf-shell">
@@ -127,7 +137,8 @@ async function openBook(bookId, loadedFile = null) {
     const file = loadedFile || await api.readBook(book.path);
     activeBook = book;
     activeContent = file;
-    paragraphs = parseParagraphs(file.text);
+    // readTxtFile 返回的 text 已经过 electron/book-service.js 的 normalizeText。
+    paragraphs = parseParagraphs(file.text, { normalized: true });
     chapters = detectChapters(paragraphs);
     activeChapter = -1;
     activeChapterItem = null;
@@ -177,6 +188,9 @@ function renderReader(contentChanged = false) {
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
   `;
+  // 段落节点只在建树后查一次。滚动期间每帧都要按索引取段落，而
+  // querySelectorAll 会为 13 万个节点重建一个列表，属于纯粹的重复开销。
+  paragraphNodes = document.querySelectorAll('#reader-content p');
   bindReaderEvents();
   applyReaderSettings(settings);
   const scroll = document.querySelector('#reader-scroll');
@@ -265,6 +279,7 @@ function bindReaderEvents() {
     activeBook = null;
     activeContent = null;
     paragraphs = [];
+    paragraphNodes = null;
     chapters = [];
     activeChapter = -1;
     activeChapterItem = null;
@@ -312,10 +327,11 @@ function bindReaderEvents() {
   });
 }
 
-async function updateSetting(name, value) {
+function updateSetting(name, value) {
   const current = resolveBookSettings(library.settings, activeBook.settings);
   activeBook.settings = normalizeSettings({ ...current, [name]: value });
-  applyReaderSettings(activeBook.settings);
+  scheduleReaderSettingsApply();
+  // 面板上的按钮态与数值显示必须跟手，且都只动一两个节点，保持同步更新。
   if (name === 'theme') {
     document.querySelectorAll('[data-theme-choice]').forEach((button) => button.classList.toggle('is-active', button.dataset.themeChoice === value));
   }
@@ -324,7 +340,21 @@ async function updateSetting(name, value) {
   }
   const output = document.querySelector(`#${name}-output`);
   if (output) output.textContent = `${value}${name === 'fontSize' || name === 'contentWidth' ? 'px' : name === 'paragraphSpacing' ? 'em' : ''}`;
-  await persistLibrary();
+  schedulePersistLibrary();
+}
+
+// 拖动滑条时 input 事件一帧内可以触发多次，而这里的每一个自定义属性都被全部段落继承、
+// 又参与段落的 `font` 简写，改一次就是一次整篇重排（实测 13 万段约 980 ms）。
+// 合并到下一帧，一帧只重排一次。
+//
+// 落地时读的是 activeBook.settings 的当前值而不是入队时的快照：快速拖动时最后落地的
+// 一定是最新值，不会出现「松手后停在中间某个位置」。
+function scheduleReaderSettingsApply() {
+  if (settingsFrame) return;
+  settingsFrame = requestAnimationFrame(() => {
+    settingsFrame = 0;
+    if (activeBook) applyReaderSettings(activeBook.settings);
+  });
 }
 
 function applyReaderSettings(settings) {
@@ -337,7 +367,9 @@ function applyReaderSettings(settings) {
   root.style.setProperty('--content-width', `${settings.contentWidth}px`);
   root.dataset.font = settings.fontFamily;
   root.dataset.indent = settings.indent ? 'true' : 'false';
-  applyTheme(settings.theme);
+  // applyTheme 写的是 documentElement，与 .reader-shell 上的自定义属性无关。
+  // 改字号时主题并没有变，没有必要每帧重复写一次。
+  if (document.documentElement.dataset.theme !== (settings.theme || 'warm')) applyTheme(settings.theme);
 }
 
 async function saveCurrentProgress(progress = null) {
@@ -397,6 +429,19 @@ async function persistLibrary() {
   await api.saveLibrary(library);
 }
 
+// 只给「连续改值」的设置路径用（拖滑条、切主题）：这类改动一次落盘 1~2 ms，
+// 但拖动期间一秒能触发几十次，没必要每次都写磁盘。
+// 结构类改动（导入、移除、重新定位、打开书籍）必须继续立即落盘——它们改的是书架本身，
+// 晚一拍就可能在异常退出时整条记录丢失。
+// 退出时的最后一份数据由 beforeunload 直接交出去，不依赖这个定时器。
+function schedulePersistLibrary() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    void persistLibrary();
+  }, 400);
+}
+
 // 目录与阅读设置共用同一个抽屉形态，同时只允许打开一个。
 const PANEL_IDS = { settings: 'settings-panel', toc: 'toc-panel' };
 
@@ -429,11 +474,14 @@ function currentChapterIndex(paragraphIndex) {
 // 高亮的章节明显不对。保存阅读进度用估算还可以接受（恢复时首先按上下文精确匹配），
 // 但高亮必须准确，否则用户一眼就能看出错。
 //
+// 段落列表取自 renderReader() 建树时缓存下来的 paragraphNodes：这里每帧都要调用，
+// 而 querySelectorAll 会为 13 万个节点重建列表，纯属重复开销。
+//
 // 段落是正常流的块级元素，bottom 沿文档顺序单调递增，因此可以二分查找：
 // 数千段也只需约 12 次 getBoundingClientRect，且首次读取已强制布局，后续读取
 // 不再触发。调用点见 scheduleActiveChapterRefresh()——滚动期间收敛到每帧最多一次。
 function topParagraphIndex(scroll) {
-  const items = scroll.querySelectorAll('#reader-content p');
+  const items = paragraphNodes || scroll.querySelectorAll('#reader-content p');
   if (!items.length) return -1;
   const top = scroll.getBoundingClientRect().top + 2;
   let low = 0;
@@ -489,6 +537,7 @@ function jumpToChapter(index) {
 }
 
 function renderLoading(name) {
+  paragraphNodes = null;
   app.innerHTML = `<main class="loading-view"><span></span><p>正在打开《${escapeHtml(name)}》</p></main>`;
 }
 

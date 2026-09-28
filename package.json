@@ -10,6 +10,7 @@
     "build": "vite build",
     "dist": "npm run build && electron-builder --win",
     "test": "node --test",
+    "bench": "electron tools/bench-reader.mjs",
     "test:ui": "npm run build && electron tests/ui/entry.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },

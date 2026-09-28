@@ -11,15 +11,18 @@ function splitIntoBlocks(normalized) {
   return normalized.split(blankRatio >= BLANK_LINE_THRESHOLD ? /\n\s*\n+/ : /\n+/);
 }
 
-export function parseParagraphs(text) {
-  const normalized = text.replace(/\r\n?/g, '\n').trim();
-  if (!normalized) return [];
+// `normalized` 为 true 表示调用方已经跑过 electron/book-service.js 的 normalizeText
+// （readTxtFile 就是这么返回的），此时可以跳过换行归一化那一次覆盖全文的正则替换。
+// 默认 false 保持原有契约不变，测试与其它调用点无需改动。
+export function parseParagraphs(text, { normalized = false } = {}) {
+  const source = normalized ? text.trim() : text.replace(/\r\n?/g, '\n').trim();
+  if (!source) return [];
   const paragraphs = [];
   let cursor = 0;
-  for (const rawParagraph of splitIntoBlocks(normalized)) {
+  for (const rawParagraph of splitIntoBlocks(source)) {
     const paragraph = rawParagraph.replace(/\n+/g, '').trim();
     if (!paragraph) continue;
-    const charOffset = normalized.indexOf(rawParagraph, cursor);
+    const charOffset = source.indexOf(rawParagraph, cursor);
     paragraphs.push({
       index: paragraphs.length,
       text: paragraph,
@@ -63,15 +66,21 @@ export function restoreScroll(element, paragraphs, progress) {
   const index = findRestoreIndex(paragraphs, progress);
   requestAnimationFrame(() => {
     const target = element.querySelector(`[data-paragraph-index="${index}"]`);
-    if (target) target.scrollIntoView({ block: 'start' });
+    // 显式 instant。恢复的位置可能在全书任意处（动辄上千万像素），
+    // 一旦这里退回平滑滚动，就是一次持续近一秒、期间界面还在动的连锁动画
+    // （实测 924 ms，而跳变只要 41.5 ms）。.reader-scroll 已经不设 scroll-behavior，
+    // 这里写明取值是为了把「恢复位置必须是跳变」固定在调用处，不依赖样式表的现状。
+    if (target) target.scrollIntoView({ block: 'start', behavior: 'instant' });
     else element.scrollTop = (progress.ratio || 0) * Math.max(0, element.scrollHeight - element.clientHeight);
   });
 }
 
 // ── 章节识别 ──────────────────────────────────────────────────────────────
 //
-// 目录只在打开书籍时从内存中的段落现算，不写入 library.json：
-// 章节标题是小说正文的片段，落盘就违反了「正文不复制到应用内部」的核心约束。
+// 目录只在打开书籍时从内存中的段落现算，不写入 library.json。
+// 核心约束 1 于 2026-09-28 放宽后，章节标题已经允许落盘，这里仍然选择不落盘，
+// 理由是收益不抵代价：识别占打开耗时的比例极小（瓶颈是段落解析与建树），
+// 却要把上千条正文派生字符串写进 library.json。详见 docs/PROJECT.md 第 4 节。
 
 const CN_DIGITS = {
   零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,

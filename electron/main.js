@@ -24,6 +24,20 @@ const APP_ICON = path.join(__dirname, '..', 'design', 'app-icon', 'final', 'icon
 let mainWindow;
 let store;
 
+// 落盘串行化。
+// store.save() 是「写 .tmp → 备份 .bak → rename」三步，两次 save 并发时后者的
+// writeFile(.tmp) 可能夹在前者的 rename 之前，使 rename 搬走的是别人的内容、
+// 而 .bak 里留下另一份，最终三个文件互不一致。串成一条链，任何时刻只有一个 save 在跑。
+// 链上已经 catch，所以 saveChain 永远不会 reject；单次失败不会打断后续写入。
+let saveChain = Promise.resolve();
+
+function queueSave(data) {
+  saveChain = saveChain.then(() => store.save(data)).catch((error) => {
+    console.error('保存书架数据失败：', error);
+  });
+  return saveChain;
+}
+
 function createApplicationMenu() {
   const template = [
     {
@@ -112,14 +126,18 @@ function createWindow() {
 
 function registerIpc() {
   ipcMain.handle('library:load', async () => store.load());
-  ipcMain.handle('library:save', async (_event, data) => store.save(data));
-  ipcMain.on('library:save-on-exit', (_event, data) => {
-    void store.save(data);
+  ipcMain.handle('library:save', async (_event, data) => queueSave(data));
+  ipcMain.on('library:save-on-exit', (event, data) => {
+    queueSave(data);
+    // 立刻回值：这里是窗口关闭路径，不能让渲染进程等磁盘。
+    // 真正的落盘由下面的 will-quit 兜住。
+    event.returnValue = true;
   });
   ipcMain.handle('library:remove', async (_event, bookId) => {
     const data = (await store.load()) || { version: 1, settings: {}, books: [] };
     data.books = data.books.filter((book) => book.id !== bookId);
-    await store.save(data);
+    // 不走 store.save()：否则这次写入会和队列里待跑的保存并发，回到上面说的错位问题。
+    await queueSave(data);
     return data;
   });
   ipcMain.handle('book:choose', async () => {
@@ -147,4 +165,23 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+// 退出前把队列里的写入等完。
+//
+// 用 will-quit 而不是 before-quit：will-quit 在所有窗口都已关闭之后才触发，因此此刻
+// 渲染进程的 beforeunload 一定已经把最后一份快照交出来了；before-quit 早于窗口关闭，
+// 在那里等待会等到一份还不存在的写入。
+//
+// 这正是旧实现的缺陷所在：原来只是 `void store.save(data)` 起个头就放行退出，
+// 进程可能死在 writeFile(.tmp) 与 rename 之间，用户数据目录里留下一份 .tmp 残骸
+// （2026-09-28 实测确认：.bak 的 mtime 停留在上一次保存，说明 copyFile 根本没执行到）。
+let quitting = false;
+app.on('will-quit', (event) => {
+  if (quitting) return;
+  quitting = true;
+  event.preventDefault();
+  const pending = saveChain;
+  saveChain = Promise.resolve();
+  pending.then(() => app.quit());
 });
