@@ -38,7 +38,7 @@ async function openFirstBook(win) {
   await ui.waitFor(win, "return Boolean(document.querySelector('.reader-shell'));", { label: '进入阅读页' });
   await ui.disableSmoothScroll(win);
   await ui.waitFor(win, "return document.querySelectorAll('#reader-content p').length > 0;", { label: '正文渲染完成' });
-  // restoreScroll() 的滚动在 rAF 里，必须等它落定再手动滚动，否则两者会互相覆盖。
+  // 恢复位置之后窗口可能还会重建一次，必须等滚动落定再手动滚动，否则两者会互相覆盖。
   await ui.waitForStableScroll(win);
 }
 
@@ -113,8 +113,14 @@ const SPECS = [
       mock.queueChoose();
       await ui.click(win, '#import-book');
       await ui.waitFor(win, "return Boolean(document.querySelector('.reader-shell'));", { label: '导入后应自动进入阅读页' });
-      const paragraphs = await ui.evaluate(win, "return document.querySelectorAll('#reader-content p').length;");
-      assertTrue(paragraphs > 100, `导入后正文应有内容，实际段落数 ${paragraphs}`);
+      // 段落数取自 data-paragraph-count（整本），而不是 DOM 里的 <p> 数量：
+      // 窗口化渲染之后 DOM 里只有视口附近的那几百段。
+      const paragraphs = await ui.evaluate(win, `
+        const content = document.querySelector('#reader-content');
+        return { total: Number(content.dataset.paragraphCount), dom: content.querySelectorAll('p').length };
+      `);
+      assertTrue(paragraphs.total > 100, `导入后正文应有内容，实际段落数 ${paragraphs.total}`);
+      assertTrue(paragraphs.dom > 0, '导入后应立刻渲染出正文');
 
       await ui.click(win, '#back-to-shelf');
       await ui.waitFor(win, "return Boolean(document.querySelector('.shelf-shell'));", { label: '返回书架' });
@@ -126,7 +132,7 @@ const SPECS = [
       `);
       assertEqual(shelf.rows, 1, '书架应有 1 条记录');
       assertEqual(shelf.title, '测试小说', '书架应显示书名');
-      return `导入后正文 ${paragraphs} 段，书架 1 条记录`;
+      return `导入后正文 ${paragraphs.total} 段（DOM 中 ${paragraphs.dom} 段），书架 1 条记录`;
     },
   },
 
@@ -249,7 +255,7 @@ const SPECS = [
       await ui.waitFor(win, "return Boolean(document.querySelector('.shelf-shell'));", { label: '返回书架' });
       await openFirstBook(win);
 
-      // 比较语义位置而非像素：restoreScroll() 用 scrollIntoView 对齐段落顶部，
+      // 比较语义位置而非像素：恢复位置是把目标段落对齐到视口顶部，
       // 恢复后的 scrollTop 天然不等于保存前的 scrollTop。
       let restored = null;
       try {
@@ -258,10 +264,210 @@ const SPECS = [
           return restored.index === saved.paragraphIndex;
         }, { label: `恢复后视口顶部应为第 ${saved.paragraphIndex} 段` });
       } catch (error) {
-        throw new Error(`${error.message}，实际顶部为第 ${restored?.index} 段（正文共 ${restored?.count} 段）`);
+        throw new Error(`${error.message}，实际顶部为第 ${restored?.index} 段（正文共 ${restored?.total} 段）`);
       }
 
       return `保存于第 ${saved.paragraphIndex} 段（${Math.round(saved.ratio * 100)}%），恢复后顶部为第 ${restored.index} 段`;
+    },
+  },
+
+  {
+    // 窗口化渲染只在书比窗口大时才看得见，所以这条用 4000 段的夹具：
+    // 其余几条的 200 段夹具整本都塞得进窗口，跑不出窗口边界，
+    // 拿它们断言「DOM 里段落数有上限」会无条件通过，等于没测。
+    name: 'windowing',
+    seed: 'book',
+    text: 'large',
+    async run({ win }) {
+      await openFirstBook(win);
+
+      // 整本段数与当前 DOM 段数、底部垫片高度。三样一起取，避免中途状态漂移。
+      const state = `
+        const content = document.querySelector('#reader-content');
+        const spacer = content.querySelector('[data-spacer="bottom"]');
+        return {
+          total: Number(content.dataset.paragraphCount),
+          dom: content.querySelectorAll('p').length,
+          spacer: Math.round(spacer.getBoundingClientRect().height),
+        };
+      `;
+
+      // ── 首屏：屏幕外的段落没有进 DOM，高度由垫片撑着 ────────────────
+      const initial = await ui.evaluate(win, state);
+      // 夹具每 20 段插一个章节标题：4000 段正文 + 200 段标题。
+      assertEqual(initial.total, 4200, '夹具应为 4200 段（4000 正文 + 200 章节标题）');
+      assertTrue(initial.dom > 0, '首屏应有正文');
+      assertTrue(initial.dom < 700, `DOM 里的段落数应有上限，实际 ${initial.dom} 段`);
+      assertTrue(initial.spacer > 100000, `未渲染部分应由底部垫片撑出高度，实际 ${initial.spacer}px`);
+
+      // ── 跳到很远的一章：目标段落本来不在 DOM 里，位置由偏移表算出 ──
+      await ui.click(win, '#open-toc');
+      await ui.waitFor(win, "return Boolean(document.querySelector('#toc-panel.is-open'));", { label: '目录面板应打开' });
+      const target = 150;
+      const title = await ui.evaluate(win, `
+        return document.querySelector('#toc-list [data-chapter-index="${target}"]').textContent.trim();
+      `);
+      await ui.click(win, `#toc-list [data-chapter-index="${target}"]`);
+      let top = null;
+      try {
+        await ui.waitUntil(async () => {
+          top = await ui.topParagraphIndex(win);
+          return top.text === title;
+        }, { label: `跳转后视口顶部应为「${title}」` });
+      } catch (error) {
+        throw new Error(`${error.message}，实际顶部为「${top?.text}」`);
+      }
+      const jumped = await ui.evaluate(win, state);
+      assertTrue(jumped.dom < 700, `跳转后 DOM 里的段落数仍应有上限，实际 ${jumped.dom} 段`);
+
+      // ── 改字号：重排窗口而不是全篇，且落点不漂 ──────────────────────
+      await ui.click(win, '#open-settings');
+      await ui.setRange(win, '#fontSize-setting', 26);
+      await ui.waitFor(win, `
+        const p = document.querySelector('#reader-content p');
+        return p ? getComputedStyle(p).fontSize === '26px' : false;
+      `, { label: '字号应即时生效为 26px' });
+      // 字号一改，段高估算和整个窗口都要重来；视口顶部那一段必须还在原处，
+      // 否则「改完设置就找不到读到哪了」——这正是窗口化最容易引入的回归。
+      const afterResize = await ui.topParagraphIndex(win);
+      assertEqual(afterResize.index, top.index, `改字号后落点不应漂移（第 ${top.index} 段 → 第 ${afterResize.index} 段）`);
+
+      return `4200 段：首屏 DOM ${initial.dom} 段、底部垫片 ${initial.spacer}px；跳到第 ${target} 章落到第 ${top.index} 段（DOM ${jumped.dom} 段）；改字号后仍停在第 ${afterResize.index} 段`;
+    },
+  },
+
+  {
+    // 自绘滚动条。原生滚动条在长书上是失效的：滑块按比例只有零点几像素，
+    // 浏览器只能按最小长度画一小截，拖动 1px 就跨十屏、点空白轨道还会朝按下方向
+    // 一直翻页。所以这里换成自己画的，下面断言它真的可用。
+    name: 'scrollbar',
+    seed: 'book',
+    text: 'large',
+    async run({ win }) {
+      await openFirstBook(win);
+
+      // 自绘滚动条收的是普通页面事件，可以像真人一样按下—移动—松开。
+      // （原生滚动条做不到：合成的鼠标事件驱动不了它，这也是这条问题一开始
+      // 只能靠「把文档高度量出来」定位、无法在测试里复现的原因。）
+      const dragThumb = (ratio) => ui.evaluate(win, `
+        const track = document.querySelector('#reader-scrollbar');
+        const thumb = document.querySelector('#reader-scrollbar-thumb');
+        const trackRect = track.getBoundingClientRect();
+        const thumbRect = thumb.getBoundingClientRect();
+        const span = trackRect.height - thumbRect.height;
+        const grab = 6;
+        const at = (y) => ({ bubbles: true, cancelable: true, pointerId: 7, pointerType: 'mouse', button: 0, buttons: 1, clientX: Math.round(trackRect.left + 7), clientY: Math.round(y) });
+        const targetY = trackRect.top + span * ${ratio} + grab;
+        thumb.dispatchEvent(new PointerEvent('pointerdown', at(thumbRect.top + grab)));
+        window.dispatchEvent(new PointerEvent('pointermove', at(targetY)));
+        window.dispatchEvent(new PointerEvent('pointerup', at(targetY)));
+        const scroll = document.querySelector('#reader-scroll');
+        const max = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+        return max ? scroll.scrollTop / max : 1;
+      `);
+
+      const state = `
+        const scroll = document.querySelector('#reader-scroll');
+        const track = document.querySelector('#reader-scrollbar');
+        const thumb = document.querySelector('#reader-scrollbar-thumb');
+        const trackRect = track.getBoundingClientRect();
+        const thumbRect = thumb.getBoundingClientRect();
+        const max = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+        return {
+          nativeWidth: scroll.offsetWidth - scroll.clientWidth,
+          trackHidden: track.hidden,
+          trackHeight: Math.round(trackRect.height),
+          thumbHeight: Math.round(thumbRect.height),
+          thumbMiddle: trackRect.height ? (thumbRect.top - trackRect.top + thumbRect.height / 2) / trackRect.height : 0,
+          viewport: scroll.clientHeight,
+          scrollTop: Math.round(scroll.scrollTop),
+          max: Math.round(max),
+          ratio: max ? scroll.scrollTop / max : 0,
+        };
+      `;
+
+      // ── 原生滚动条已隐藏，自绘的那条滑块可抓 ────────────────────────
+      const initial = await ui.evaluate(win, state);
+      assertEqual(initial.nativeWidth, 0, '原生滚动条不应再占宽度');
+      assertTrue(!initial.trackHidden, '长书上自绘滚动条应显示出来');
+      assertTrue(initial.thumbHeight >= 24, `滑块长度应有下限、必须抓得住，实际 ${initial.thumbHeight}px`);
+      assertTrue(initial.max > 100000, `夹具应撑出足够长的滚动高度，实际 ${initial.max}px`);
+
+      // ── 滚轮落在轨道上：正文照常滚动，右侧不留死区 ──────────────────
+      const wheeled = await ui.evaluate(win, `
+        const scroll = document.querySelector('#reader-scroll');
+        const track = document.querySelector('#reader-scrollbar');
+        const before = scroll.scrollTop;
+        track.dispatchEvent(new WheelEvent('wheel', { deltaY: 200, deltaMode: 0, bubbles: true, cancelable: true }));
+        return { before: Math.round(before), after: Math.round(scroll.scrollTop) };
+      `);
+      await ui.waitForStableScroll(win);
+      assertTrue(wheeled.after - wheeled.before > 100,
+        `滚轮落在轨道上应照常滚正文，实际只走了 ${wheeled.after - wheeled.before}px`);
+
+      // ── 点空白轨道：翻一屏（一比一，正好一个视口高度）────────────────
+      const paged = await ui.evaluate(win, `
+        const scroll = document.querySelector('#reader-scroll');
+        const track = document.querySelector('#reader-scrollbar');
+        const rect = track.getBoundingClientRect();
+        const at = (y) => ({ bubbles: true, cancelable: true, pointerId: 8, pointerType: 'mouse', button: 0, buttons: 1, clientX: Math.round(rect.left + 7), clientY: Math.round(y) });
+        const before = scroll.scrollTop;
+        track.dispatchEvent(new PointerEvent('pointerdown', at(rect.bottom - 20)));
+        return { before: Math.round(before), after: Math.round(scroll.scrollTop), viewport: scroll.clientHeight };
+      `);
+      await ui.waitForStableScroll(win);
+      // 起点不是 0：恢复位置是把目标段落顶到视口顶部，第 0 段的文档位置含正文上方的
+      // 内边距，因此比的是这一步走了多少，不是绝对位置。
+      const stepped = paged.after - paged.before;
+      assertTrue(Math.abs(stepped - paged.viewport) < 10,
+        `点轨道下方应向下翻一屏（${paged.viewport}px），实际走了 ${stepped}px`);
+
+      // ── 拖到轨道中间：按全书比例定位 ────────────────────────────────
+      await dragThumb(0.5);
+      await ui.waitForStableScroll(win);
+      const middle = await ui.evaluate(win, state);
+      assertTrue(Math.abs(middle.ratio - 0.5) < 0.02,
+        `拖到轨道中间应落在全书约一半，实际 ${(middle.ratio * 100).toFixed(1)}%`);
+      const top = await ui.topParagraphIndex(win);
+      assertTrue(top.index > 1900 && top.index < 2300,
+        `拖到一半应落在 4200 段的中间附近，实际第 ${top.index} 段`);
+      assertTrue(Math.abs(middle.thumbMiddle - 0.5) < 0.05,
+        `滑块应画在全书的中间位置，实际在 ${(middle.thumbMiddle * 100).toFixed(1)}% 处`);
+
+      // ── 再拖一小段：只能挪一小段，不能一拖就到底（这正是原来的问题）──
+      await dragThumb(0.6);
+      await ui.waitForStableScroll(win);
+      const nudged = await ui.evaluate(win, state);
+      assertTrue(nudged.ratio > 0.55 && nudged.ratio < 0.65,
+        `拖 10% 轨道应只前进约 10%，实际落到 ${(nudged.ratio * 100).toFixed(1)}%`);
+
+      return `原生滚动条已隐藏；滑块 ${initial.thumbHeight}px / 轨道 ${initial.trackHeight}px，`
+        + `点轨道翻屏 ${stepped}px，拖到中间落到第 ${top.index} 段（${(middle.ratio * 100).toFixed(1)}%），`
+        + `再拖 10% 到 ${(nudged.ratio * 100).toFixed(1)}%`;
+    },
+  },
+
+  {
+    // 整本装得下一屏：没有可滚动的内容，滚动条不该出现（原生滚动条此时也不出现）。
+    name: 'scrollbar-short-book',
+    seed: 'book',
+    text: 'tiny',
+    async run({ win }) {
+      await openFirstBook(win);
+      const state = await ui.evaluate(win, `
+        const scroll = document.querySelector('#reader-scroll');
+        const track = document.querySelector('#reader-scrollbar');
+        const thumb = document.querySelector('#reader-scrollbar-thumb');
+        return {
+          max: Math.round(scroll.scrollHeight - scroll.clientHeight),
+          hidden: track.hidden,
+          thumbHeight: Math.round(thumb.getBoundingClientRect().height),
+        };
+      `);
+      assertTrue(state.max <= 0, `夹具应装得下一屏，实际还能滚 ${state.max}px`);
+      assertTrue(state.hidden, '没有可滚动内容时整条滚动条都应隐藏');
+      assertEqual(state.thumbHeight, 0, '滚动条隐藏时滑块不应占位');
+      return `短书（可滚动 ${state.max}px）：滚动条已隐藏，滑块高度 ${state.thumbHeight}px`;
     },
   },
 
@@ -448,7 +654,8 @@ const SPECS = [
     async run({ win }) {
       await openFirstBook(win);
       // 无空行 TXT：改动前会被解析成一个段落，整本渲染成一整块文字。
-      const paragraphs = await ui.evaluate(win, "return document.querySelectorAll('#reader-content p').length;");
+      // 数的是 data-paragraph-count（整本），不是 DOM 里的 <p> 数量。
+      const paragraphs = await ui.evaluate(win, "return Number(document.querySelector('#reader-content').dataset.paragraphCount);");
       assertEqual(paragraphs, 200, `无空行文本应按行切分为 200 段，实际 ${paragraphs}`);
 
       await ui.click(win, '#open-toc');

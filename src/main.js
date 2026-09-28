@@ -1,6 +1,7 @@
 import './styles.css';
 import { DEFAULT_SETTINGS, THEMES, createBookRecord, normalizeLibrary, normalizeSettings, resolveBookSettings } from './store.js';
-import { detectChapters, findRestoreIndex, getProgressFromScroll, parseParagraphs, restoreScroll } from './reader.js';
+import { createParagraphWindow, detectChapters, escapeHtml, findRestoreIndex, getProgressFromScroll, parseParagraphs } from './reader.js';
+import { createReaderScrollbar } from './reader-scrollbar.js';
 
 const api = window.novelApi;
 const app = document.querySelector('#app');
@@ -14,11 +15,15 @@ let activeChapterItem = null;
 let chapterRefreshFrame = 0;
 let scrollSaveTimer = null;
 let toastTimer = null;
-// 正文段落的缓存 NodeList。见 topParagraphIndex() 的说明。
-let paragraphNodes = null;
+// 当前阅读页的段落窗口。见 src/reader.js 的 createParagraphWindow()。
+let paragraphWindow = null;
+// 当前阅读页右侧的自绘滚动条。见 src/reader-scrollbar.js。
+let readerScrollbar = null;
 // 设置类改动合并到下一帧、落盘防抖。见 scheduleReaderSettingsApply()。
 let settingsFrame = 0;
 let persistTimer = null;
+// 窗口尺寸变化会改变版心实际宽度，进而让全书的高度估算失效。见下面的 resize 监听。
+let resizeFrame = 0;
 
 async function initialize() {
   if (!api) {
@@ -40,7 +45,8 @@ async function checkBookAvailability() {
 }
 
 function renderShelf() {
-  paragraphNodes = null;
+  paragraphWindow = null;
+  readerScrollbar = null;
   applyTheme(library.settings.theme);
   app.innerHTML = `
     <main class="shelf-shell">
@@ -160,6 +166,10 @@ async function openBook(bookId, loadedFile = null) {
 }
 
 function renderReader(contentChanged = false) {
+  // 整个外壳会被重建，旧窗口持有的元素随即脱离文档，必须先丢掉它，
+  // 否则下面 applyReaderSettings() 会对着脱离文档的元素重排一次。
+  paragraphWindow = null;
+  readerScrollbar = null;
   const settings = resolveBookSettings(library.settings, activeBook.settings);
   app.innerHTML = `
     <main class="reader-shell" data-theme="${settings.theme}">
@@ -177,29 +187,54 @@ function renderReader(contentChanged = false) {
         </div>
       </header>
       ${contentChanged ? '<p class="file-change-notice">原文件内容有变化，已按上次位置尽量恢复。</p>' : ''}
-      <section class="reader-scroll" id="reader-scroll" tabindex="0">
-        <article class="reader-content" id="reader-content">
-          ${renderParagraphs()}
-        </article>
-      </section>
+      <div class="reader-viewport">
+        <section class="reader-scroll" id="reader-scroll" tabindex="0">
+          <article class="reader-content" id="reader-content" data-paragraph-count="${paragraphs.length}"></article>
+        </section>
+        <div class="reader-scrollbar" id="reader-scrollbar" role="scrollbar" aria-label="阅读位置" aria-controls="reader-scroll" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span class="reader-scrollbar-thumb" id="reader-scrollbar-thumb"></span>
+        </div>
+      </div>
       <div class="reading-progress" aria-hidden="true"><span id="reading-progress-bar"></span></div>
       ${renderTocPanel()}
       ${renderSettingsPanel(settings)}
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
   `;
-  // 段落节点只在建树后查一次。滚动期间每帧都要按索引取段落，而
-  // querySelectorAll 会为 13 万个节点重建一个列表，属于纯粹的重复开销。
-  paragraphNodes = document.querySelectorAll('#reader-content p');
   bindReaderEvents();
+  // 先写样式变量再建窗口：段落高度估算读的就是当前字号与版心宽度。
   applyReaderSettings(settings);
-  const scroll = document.querySelector('#reader-scroll');
-  restoreScroll(scroll, paragraphs, activeBook.progress);
+  paragraphWindow = createParagraphWindow({
+    scroll: document.querySelector('#reader-scroll'),
+    content: document.querySelector('#reader-content'),
+    paragraphs,
+  });
+  paragraphWindow.setLayout(readerLayout(settings));
+  // 恢复阅读位置：把目标段落对齐到视口顶部。窗口会围着它重建，
+  // 因此屏幕外的段落不需要存在于 DOM 里，也不再有 scrollIntoView。
+  paragraphWindow.scrollToIndex(findRestoreIndex(paragraphs, activeBook.progress));
+  // 滚动条要在位置恢复之后再建：它的长度和位置都是按 scrollTop/scrollHeight 现算的。
+  readerScrollbar = createReaderScrollbar({
+    scroll: document.querySelector('#reader-scroll'),
+    track: document.querySelector('#reader-scrollbar'),
+    thumb: document.querySelector('#reader-scrollbar-thumb'),
+    // 拖动与翻屏会一次跨过几百段，落在窗口之外；立刻重建一次，
+    // 免得中间那一帧露出还没换上内容的空白区（与目录面板的进度滑条同一处理）。
+    onJump: () => paragraphWindow?.syncViewport(),
+  });
+  readerScrollbar.sync();
   updateProgressUi(activeBook.progress?.ratio || 0);
 }
 
-function renderParagraphs() {
-  return paragraphs.map(({ text, index }) => `<p data-paragraph-index="${index}">${escapeHtml(text)}</p>`).join('');
+// 段落高度估算只关心这几个参数；版心宽度由窗口从 DOM 实测（窗口窄的时候
+// min(var(--content-width), calc(100% - 56px)) 取到的不是设置值）。
+function readerLayout(settings) {
+  return {
+    fontSize: settings.fontSize,
+    lineHeight: settings.lineHeight,
+    paragraphSpacing: settings.paragraphSpacing,
+    indent: settings.indent,
+  };
 }
 
 function renderTocPanel() {
@@ -279,7 +314,8 @@ function bindReaderEvents() {
     activeBook = null;
     activeContent = null;
     paragraphs = [];
-    paragraphNodes = null;
+    paragraphWindow = null;
+    readerScrollbar = null;
     chapters = [];
     activeChapter = -1;
     activeChapterItem = null;
@@ -303,12 +339,20 @@ function bindReaderEvents() {
       const scroll = document.querySelector('#reader-scroll');
       const ratio = Number(percentInput.value) / 100;
       scroll.scrollTop = ratio * Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+      // 滚动事件要等下一个任务才到，而拖动时每一帧都可能在新的位置重建窗口。
+      // 这里立刻同步一次，避免中间那一帧露出还没换上内容的空白区。
+      paragraphWindow?.syncViewport();
+      readerScrollbar?.sync();
       document.querySelector('#toc-percent-output').textContent = `${percentInput.value}%`;
     });
   }
   const scroll = document.querySelector('#reader-scroll');
   scroll.addEventListener('scroll', () => {
-    const progress = getProgressFromScroll(scroll, paragraphs);
+    // 先重建窗口：窗口变化会微调 scrollTop 把落点钉住，之后算出来的进度才是最终值。
+    paragraphWindow?.syncViewport();
+    // 滚动条同理，放在窗口重建之后：要跟上被钉住的那个位置。
+    readerScrollbar?.sync();
+    const progress = currentProgress();
     updateProgressUi(progress.ratio);
     scheduleActiveChapterRefresh();
     clearTimeout(scrollSaveTimer);
@@ -370,12 +414,22 @@ function applyReaderSettings(settings) {
   // applyTheme 写的是 documentElement，与 .reader-shell 上的自定义属性无关。
   // 改字号时主题并没有变，没有必要每帧重复写一次。
   if (document.documentElement.dataset.theme !== (settings.theme || 'warm')) applyTheme(settings.theme);
+  // 字号/行距/段距/版心宽度都会改变段落高度：重估全书 → 只重排窗口内那几百段。
+  paragraphWindow?.setLayout(readerLayout(settings));
+  // 全书高度变了，滑块的换算比例也跟着变（宽度变化不触发 scroll 事件）。
+  readerScrollbar?.sync();
+}
+
+// 当前阅读进度。段落索引查偏移表，因此不受段落长短不均的影响。
+function currentProgress() {
+  const scroll = document.querySelector('#reader-scroll');
+  if (!scroll) return null;
+  return getProgressFromScroll(scroll, paragraphs, paragraphWindow?.offsets() || null);
 }
 
 async function saveCurrentProgress(progress = null) {
   if (!activeBook) return;
-  const scroll = document.querySelector('#reader-scroll');
-  if (!progress && scroll) progress = getProgressFromScroll(scroll, paragraphs);
+  if (!progress) progress = currentProgress();
   if (progress) activeBook.progress = progress;
   await persistLibrary();
 }
@@ -466,41 +520,8 @@ function currentChapterIndex(paragraphIndex) {
   return found;
 }
 
-// 视口顶部所在段落的真实索引。
-//
-// 不能用 getProgressFromScroll() 的「比例 × 段落数」估算：那个估算假定段落等高，
-// 而真实小说的段落长度差异很大（对话密集段与长描写段可以差好几倍），误差会沿全书
-// 累积。实测一本段落长度递增的合成书，跳到第 5 章时估算落在第 3 章——跳转后目录
-// 高亮的章节明显不对。保存阅读进度用估算还可以接受（恢复时首先按上下文精确匹配），
-// 但高亮必须准确，否则用户一眼就能看出错。
-//
-// 段落列表取自 renderReader() 建树时缓存下来的 paragraphNodes：这里每帧都要调用，
-// 而 querySelectorAll 会为 13 万个节点重建列表，纯属重复开销。
-//
-// 段落是正常流的块级元素，bottom 沿文档顺序单调递增，因此可以二分查找：
-// 数千段也只需约 12 次 getBoundingClientRect，且首次读取已强制布局，后续读取
-// 不再触发。调用点见 scheduleActiveChapterRefresh()——滚动期间收敛到每帧最多一次。
-function topParagraphIndex(scroll) {
-  const items = paragraphNodes || scroll.querySelectorAll('#reader-content p');
-  if (!items.length) return -1;
-  const top = scroll.getBoundingClientRect().top + 2;
-  let low = 0;
-  let high = items.length - 1;
-  let found = -1;
-  while (low <= high) {
-    const mid = (low + high) >> 1;
-    if (items[mid].getBoundingClientRect().bottom > top) {
-      found = mid;
-      high = mid - 1;
-    } else {
-      low = mid + 1;
-    }
-  }
-  return found < 0 ? -1 : Number(items[found].dataset.paragraphIndex);
-}
-
-// 滚动事件一帧内可以触发多次，而测量几何会强制同步布局。
-// 收敛到每帧最多测一次：既不会漏掉用户能看见的变化，也不会在同一帧里反复触发布局。
+// 滚动事件一帧内可以触发多次。窗口化之后定位只查偏移表、不再测量几何，
+// 但章节高亮要沿 chapters 线性找一遍，仍然收敛到每帧最多一次。
 function scheduleActiveChapterRefresh() {
   if (chapterRefreshFrame) return;
   chapterRefreshFrame = requestAnimationFrame(() => {
@@ -511,10 +532,8 @@ function scheduleActiveChapterRefresh() {
 
 // 高亮当前章节。只在章节变化时改 DOM。
 function refreshActiveChapter(reveal = false) {
-  if (!chapters.length) return;
-  const scroll = document.querySelector('#reader-scroll');
-  if (!scroll) return;
-  const next = currentChapterIndex(topParagraphIndex(scroll));
+  if (!chapters.length || !paragraphWindow) return;
+  const next = currentChapterIndex(paragraphWindow.topIndex());
   if (next !== activeChapter) {
     if (activeChapterItem) activeChapterItem.classList.remove('is-active');
     activeChapter = next;
@@ -527,17 +546,16 @@ function refreshActiveChapter(reveal = false) {
 
 function jumpToChapter(index) {
   const chapter = chapters[index];
-  if (!chapter) return;
-  const target = document.querySelector(`#reader-content [data-paragraph-index="${chapter.paragraphIndex}"]`);
-  if (!target) return;
-  // 必须显式 instant：.reader-scroll 的 scroll-behavior 是 smooth，
-  // 跨几百章的平滑滚动会变成一次漫长的连锁动画。
-  target.scrollIntoView({ block: 'start', behavior: 'instant' });
+  if (!chapter || !paragraphWindow) return;
+  // 直接把目标段落顶到视口顶部：位置由偏移表算出，因此目标章节不需要
+  // （通常也不会）已经在 DOM 里——跨几百章的跳转和翻一页是同一件事。
+  paragraphWindow.scrollToIndex(chapter.paragraphIndex);
   togglePanel('toc', false);
 }
 
 function renderLoading(name) {
-  paragraphNodes = null;
+  paragraphWindow = null;
+  readerScrollbar = null;
   app.innerHTML = `<main class="loading-view"><span></span><p>正在打开《${escapeHtml(name)}》</p></main>`;
 }
 
@@ -569,20 +587,30 @@ function formatDate(value) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric' }).format(new Date(value));
 }
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#039;', '"': '&quot;' })[char]);
-}
-
-function escapeAttribute(value) {
-  return escapeHtml(value);
-}
+// escapeHtml 来自 src/reader.js：窗口化渲染要在那里拼段落标记，两处必须是同一份实现。
+const escapeAttribute = escapeHtml;
 
 window.addEventListener('beforeunload', () => {
   if (activeBook) {
-    const scroll = document.querySelector('#reader-scroll');
-    if (scroll) activeBook.progress = getProgressFromScroll(scroll, paragraphs);
+    const progress = currentProgress();
+    if (progress) activeBook.progress = progress;
     api.saveLibraryOnExit(library);
   }
+});
+
+// 窗口尺寸变化会改变版心的实测宽度（min(设置宽度, 窗口宽 - 56px)），
+// 全书的高度估算随之失效，必须重估并重排窗口。像拖动窗口边缘这种连续变化
+// 收敛到每帧一次。
+window.addEventListener('resize', () => {
+  if (!paragraphWindow || resizeFrame) return;
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = 0;
+    if (paragraphWindow && activeBook) {
+      paragraphWindow.setLayout(readerLayout(resolveBookSettings(library.settings, activeBook.settings)));
+      // 轨道高度跟着窗口走，重排之后重新算一次滑块长度与位置。
+      readerScrollbar?.sync();
+    }
+  });
 });
 
 initialize();

@@ -38,10 +38,10 @@ const FIXTURE_FINGERPRINT = 'c0ffee1234567890abcdef01';
 // uneven：段落长度随编号增长，模拟长短段分布不均的真实小说。
 //         段落等长时，「比例 × 段落数」的估算恰好准确，会把高亮错章的 bug 完全掩盖——
 //         这个变体就是为此存在的。
-function buildFixture({ chapters = true, separator = '\n\n', uneven = false } = {}) {
+function buildFixture({ chapters = true, separator = '\n\n', uneven = false, count = 200 } = {}) {
   const paragraphs = [];
   const filler = '填充文字用于制造段落之间的长度差异，使各段高度明显不同。';
-  for (let i = 1; i <= 200; i += 1) {
+  for (let i = 1; i <= count; i += 1) {
     const marker = String(i).padStart(4, '0');
     if (chapters && (i - 1) % 20 === 0) paragraphs.push(`第${i}章 合成测试章节${marker}`);
     const body = `段落${marker} 这是界面回归测试使用的合成文本，不包含任何真实小说内容。`
@@ -58,8 +58,14 @@ const FIXTURE_TEXT = buildFixture();
 const PLAIN_TEXT = buildFixture({ chapters: false, separator: '\n' });
 // 段落长度不均、含章节标题：用于断言目录高亮的章节正确。
 const UNEVEN_TEXT = buildFixture({ uneven: true });
+// 4000 段、200 章：只有它够大，能真正跑到「窗口外」去。
+// 上面几个 200 段的夹具体量小于窗口本身，DOM 里始终是全本，
+// 因此它们能测出别的问题，但测不出窗口化本身。
+const LARGE_TEXT = buildFixture({ count: 4000 });
+// 整本装得下一屏（连正文上下内边距一起）：用于「没有可滚动内容」这一分支。
+const TINY_TEXT = buildFixture({ count: 5, chapters: false });
 
-const FIXTURE_TEXTS = { chapters: FIXTURE_TEXT, plain: PLAIN_TEXT, uneven: UNEVEN_TEXT };
+const FIXTURE_TEXTS = { chapters: FIXTURE_TEXT, plain: PLAIN_TEXT, uneven: UNEVEN_TEXT, large: LARGE_TEXT, tiny: TINY_TEXT };
 
 function createMock() {
   const state = {

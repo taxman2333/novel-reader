@@ -14,10 +14,10 @@ export function delay(ms) {
 // 结果确定，不需要与 Vite 的启动时序竞争，并且顺带验证了生产构建能正常启动。
 //
 // 窗口刻意做成「可见但移出屏幕」，而不是 show: false：
-// 隐藏窗口下 Chromium 会节流 requestAnimationFrame，而 src/reader.js 的
-// restoreScroll() 正是靠 rAF 做延迟滚动。实测中它被推迟约 500ms 才执行，
-// 会在测试已经手动滚动之后突然把位置覆盖回恢复点，导致进度断言以极难
-// 理解的方式失败。移出屏幕后窗口仍被视为可见，rAF 恢复正常节奏，
+// 隐藏窗口下 Chromium 会节流 requestAnimationFrame，而页面里仍有几处工作
+// 收敛在 rAF 上（章节高亮刷新、阅读设置的按帧应用、窗口尺寸变化后的重排）。
+// 被节流到约 1 帧/秒之后，这些本该在下一帧完成的事会拖到几百毫秒后才发生，
+// 断言会在半成品状态下取值。移出屏幕后窗口仍被视为可见，rAF 恢复正常节奏，
 // 用户也不会看到测试窗口。
 export async function createTestWindow() {
   const win = new BrowserWindow({
@@ -52,7 +52,8 @@ export async function createTestWindow() {
 export const firstPaintCondition = "return Boolean(document.querySelector('.shelf-shell') || document.querySelector('.unsupported'));";
 
 // 等滚动位置稳定下来再做后续操作。
-// restoreScroll() 的滚动发生在 rAF 里，进入阅读页后立刻手动滚动会与它竞争。
+// 进入阅读页、跳章节、拖进度条之后，窗口可能还会重建一次并微调 scrollTop
+// 把落点钉住；立刻手动滚动会与它竞争。
 export async function waitForStableScroll(win, { samples = 3, interval = 60, timeout = 4000 } = {}) {
   const deadline = Date.now() + timeout;
   let previous = null;
@@ -158,18 +159,24 @@ export async function scrollReaderTo(win, top) {
 }
 
 // 视口顶部所在的段落索引。恢复位置后用它和保存值比对：
-// restoreScroll() 用 scrollIntoView({block:'start'}) 对齐，恢复后的 scrollTop
-// 天然不等于保存前的 scrollTop，所以只能比较语义位置，不能比较像素。
+// 阅读位置是把目标段落对齐到视口顶部，恢复后的 scrollTop 天然不等于保存前的
+// scrollTop，所以只能比较语义位置，不能比较像素。
+//
+// 只从 DOM 里找，因此拿到的一定是已渲染的段落——窗口化渲染下视口内的段落
+// 按定义就在窗口里。`total` 是整本段数（来自 data-paragraph-count），
+// `count` 只是当前渲染出来的段数，两者要分清。
 export async function topParagraphIndex(win) {
   return evaluate(win, `
     const scroll = document.querySelector('#reader-scroll');
-    if (!scroll) return { index: -1, count: 0, text: null };
+    const content = document.querySelector('#reader-content');
+    if (!scroll || !content) return { index: -1, count: 0, total: 0, text: null };
     const top = scroll.getBoundingClientRect().top;
-    const items = [...document.querySelectorAll('#reader-content p')];
+    const items = [...content.querySelectorAll('p')];
     const found = items.find((el) => el.getBoundingClientRect().bottom > top + 2);
     return {
       index: found ? Number(found.dataset.paragraphIndex) : -1,
       count: items.length,
+      total: Number(content.dataset.paragraphCount) || 0,
       text: found ? found.textContent : null,
     };
   `);

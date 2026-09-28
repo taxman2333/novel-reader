@@ -10,7 +10,12 @@
 // 分两段测：
 //   1. 文本流水线（主进程）—— 读文件、解码、规范化、分段、章节识别、拼 HTML 字符串。
 //   2. 排版（渲染进程）—— 用真实 styles.css、按真实段落数与平均段长合成段落，测建树、
-//      首次布局、以及「改一次字号」触发的整篇重排。
+//      首次布局、重排，以及滚动帧间隔。
+//
+// 第二段刻意把两种 DOM 形态都测一遍：
+//   · 「整本一次性物化」是阶段 2 之前的形态，留作对照基线；
+//   · 「窗口 + 上下垫片」是现在 src/reader.js 实际用的形态。
+//   两组数字放在一起，才能看出窗口化到底省掉了多少。
 //
 // 第二段用合成段落而不是真实正文：把上百万字符的正文通过 IPC 送进渲染进程本身就要
 // 花掉可观的时间，会污染待测的那几个数。段落数与平均长度取自真实书籍，量级不失真。
@@ -21,7 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decodeText, normalizeText } from '../electron/book-service.js';
-import { detectChapters, parseParagraphs } from '../src/reader.js';
+import { detectChapters, escapeHtml, estimateParagraphHeight, parseParagraphs } from '../src/reader.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -53,11 +58,9 @@ function resolveBookPaths() {
   }
 }
 
-// 与 src/main.js 的 escapeHtml 等价。基准脚本不该为了这一个函数去 import 一个会碰
-// document 的模块，因此这里留一份局部实现。
-function escapeHtml(value) {
-  return String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#039;', '"': '&quot;' })[char]);
-}
+// 界面拼 HTML 用的就是 src/reader.js 的 escapeHtml——基准脚本要测的是同一份实现，
+// 自己留一份副本反而会把差异藏起来（src/reader.js 不在模块层碰 document，
+// 这里 import 它是安全的）。
 
 function benchTextPipeline(filePath) {
   const buffer = fs.readFileSync(filePath);
@@ -108,10 +111,13 @@ const HARNESS = () => {
     shell.dataset.indent = settings.indent ? 'true' : 'false';
   };
 
+  const paragraphMarkup = (index, avgLength) => `<p data-paragraph-index="${index}">${CHUNK.repeat(4).slice(0, avgLength)}</p>`;
+
+  // 阶段 2 之前的形态：整本一次性物化。
   window.__build = (count, avgLength, settings) => {
     apply(settings);
     const parts = [];
-    for (let i = 0; i < count; i += 1) parts.push(`<p data-paragraph-index="${i}">${CHUNK.repeat(4).slice(0, avgLength)}</p>`);
+    for (let i = 0; i < count; i += 1) parts.push(paragraphMarkup(i, avgLength));
     const html = parts.join('');
 
     let start = performance.now();
@@ -125,6 +131,36 @@ const HARNESS = () => {
     return { build, layout, height: scroll.scrollHeight, nodes: content.childElementCount };
   };
 
+  // 阶段 2 之后的形态：上下垫片 + 窗口内 2×margin+1 段。复刻 src/reader.js 的做法，
+  // 连「相邻兄弟 offsetTop 之差 = 该段真实步距」这一步也照做，否则测不到回填的开销。
+  // 垫片把窗口摆在全书正中：这样后面测滚动时是在窗口内滚，而不是在空白垫片上滑。
+  window.__window = (count, avgLength, settings, margin) => {
+    apply(settings);
+    const width = margin * 2 + 1;
+    const parts = [];
+    for (let i = 0; i < width; i += 1) parts.push(paragraphMarkup(i, avgLength));
+
+    // 先清空：上一步测「整本物化」时留下十几万个节点，不清掉的话拆树的开销会被
+    // 算进这次建树里（实测过，401 段量出 68ms，比真实值大一个数量级）。
+    content.innerHTML = '';
+    let start = performance.now();
+    content.innerHTML = `<div class="reader-spacer" data-spacer="top"></div>${parts.join('')}<div class="reader-spacer" data-spacer="bottom"></div>`;
+    const build = performance.now() - start;
+
+    const nodes = content.children;
+    start = performance.now();
+    let sum = 0;
+    for (let i = 0; i + 2 < nodes.length; i += 1) sum += nodes[i + 2].offsetTop - nodes[i + 1].offsetTop;
+    const measure = performance.now() - start;
+
+    const hidden = Math.max(0, count - width) * (sum / width);
+    nodes[0].style.height = `${Math.round(hidden / 2)}px`;
+    nodes[nodes.length - 1].style.height = `${Math.round(hidden / 2)}px`;
+    scroll.scrollTop = nodes[0].offsetHeight;
+
+    return { build, measure, nodes: content.childElementCount, height: scroll.scrollHeight };
+  };
+
   // 改一次设置 = 一次强制整篇重排。返回同步等待布局花掉的时间，
   // 也就是滑条拖动时每一帧真正被卡住的时间。
   window.__tick = (settings) => {
@@ -135,7 +171,9 @@ const HARNESS = () => {
   };
 
   // 滚动帧间隔：确认「滚动卡顿」这项没有回归。
-  window.__scroll = (ticks) => new Promise((resolve) => {
+  // 从当前位置起滚，不是从 0：窗口形态下正文只存在于窗口内，从 0 起滚会先穿过
+  // 一大段空白垫片，量到的不是排版开销。因此调用前必须先把窗口摆好。
+  window.__scroll = (ticks, step) => new Promise((resolve) => {
     const frames = [];
     let last = performance.now();
     let handlerMs = 0;
@@ -145,20 +183,40 @@ const HARNESS = () => {
       handlerMs += performance.now() - start;
     }, { passive: true });
 
-    scroll.scrollTop = 0;
     let done = 0;
-    const step = () => {
+    const tick = () => {
       const now = performance.now();
       frames.push(now - last);
       last = now;
-      scroll.scrollTop += 700;
+      scroll.scrollTop += step;
       done += 1;
-      if (done < ticks) requestAnimationFrame(step);
+      if (done < ticks) requestAnimationFrame(tick);
       else resolve({ frames: frames.slice(1), handlerMs });
     };
-    requestAnimationFrame(step);
+    requestAnimationFrame(tick);
   });
 };
+
+// 与 src/reader.js 的 WINDOW_MARGIN 保持一致。
+const WINDOW_MARGIN = 200;
+// 窗口形态下滚动这么久：120 帧 × 700px 会一路滚出窗口（401 段约合 4.8 万 px），
+// 之后的帧只是在空白垫片上滑。帧间隔是逐帧统计量，帧数与整本形态不同不影响可比性。
+const WINDOW_SCROLL_TICKS = 60;
+const SCROLL_STEP = 700;
+
+// 改一次设置要付出的、与渲染无关的那部分：全书高度重估（纯 JS，主进程侧同样适格）。
+// 热身一次再计时，否则会把 JIT 预热算进去。
+function benchEstimate(paragraphs, layout) {
+  const run = () => {
+    let sum = 0;
+    for (const paragraph of paragraphs) sum += estimateParagraphHeight(paragraph.text, layout);
+    return sum;
+  };
+  run();
+  const start = performance.now();
+  const sum = run();
+  return { ms: performance.now() - start, sum };
+}
 
 async function benchLayout({ paragraphCount, avgLength, settings }) {
   const css = fs.readFileSync(path.join(ROOT, 'src', 'styles.css'), 'utf8');
@@ -183,15 +241,21 @@ async function benchLayout({ paragraphCount, avgLength, settings }) {
   await win.webContents.executeJavaScript(`(${HARNESS.toString()})()`);
 
   // 布局类指标（建树、强制布局、重排）是同步测量，与窗口是否可见无关，可以用隐藏窗口测。
+  // 先测「整本一次性物化」——阶段 2 之前的形态，作为对照基线。
   const built = await win.webContents.executeJavaScript(`window.__build(${paragraphCount}, ${avgLength}, ${JSON.stringify(settings)})`);
-  const tickFont = await win.webContents.executeJavaScript(`window.__tick(${JSON.stringify({ ...settings, fontSize: settings.fontSize + 1 })})`);
-  const tickWidth = await win.webContents.executeJavaScript(`window.__tick(${JSON.stringify({ ...settings, contentWidth: settings.contentWidth + 20 })})`);
+  const wholeFont = await win.webContents.executeJavaScript(`window.__tick(${JSON.stringify({ ...settings, fontSize: settings.fontSize + 1 })})`);
+  const wholeWidth = await win.webContents.executeJavaScript(`window.__tick(${JSON.stringify({ ...settings, contentWidth: settings.contentWidth + 20 })})`);
+
+  // 再换成阶段 2 实际用的形态。__window 自带建树与回填的计时。
+  const windowed = await win.webContents.executeJavaScript(`window.__window(${paragraphCount}, ${avgLength}, ${JSON.stringify(settings)}, ${WINDOW_MARGIN})`);
+  const windowFont = await win.webContents.executeJavaScript(`window.__tick(${JSON.stringify({ ...settings, fontSize: settings.fontSize + 2 })})`);
+  const windowWidth = await win.webContents.executeJavaScript(`window.__tick(${JSON.stringify({ ...settings, contentWidth: settings.contentWidth + 40 })})`);
 
   // 滚动帧间隔必须先让窗口真正可见：从未显示过的窗口不参与合成，Chromium 会把它的
   // requestAnimationFrame 压到约 1 帧/秒（实测帧间隔 1001.9 ms），测出来的不是性能。
   // 因此这里短暂显示窗口，测完立刻隐藏。
   win.show();
-  const scrolled = await win.webContents.executeJavaScript('window.__scroll(120)');
+  const scrolled = await win.webContents.executeJavaScript(`window.__scroll(${WINDOW_SCROLL_TICKS}, ${SCROLL_STEP})`);
   win.hide();
 
   win.destroy();
@@ -204,8 +268,11 @@ async function benchLayout({ paragraphCount, avgLength, settings }) {
 
   return {
     built,
-    tickFont,
-    tickWidth,
+    wholeFont,
+    wholeWidth,
+    windowed,
+    windowFont,
+    windowWidth,
     frameMedian: percentile(0.5),
     frameP90: percentile(0.9),
     frameMax: sorted[sorted.length - 1] || 0,
@@ -255,17 +322,29 @@ app.whenReady().then(async () => {
       avgLength,
       settings: SETTINGS,
     });
+    const estimate = benchEstimate(result.paragraphs, { ...SETTINGS, contentWidth: 720 });
 
     log('');
     log('  — 排版（渲染进程，合成段落）');
-    log(`    ${'建树 innerHTML'.padEnd(34)}${f(layout.built.build)}`);
-    log(`    ${'首次强制布局'.padEnd(34)}${f(layout.built.layout)}   （文档高 ${(layout.built.height / 1000).toFixed(0)} 千 px，${layout.built.nodes} 个 <p>）`);
-    log(`    ${'改一次字号（整篇重排）'.padEnd(34)}${f(layout.tickFont)}`);
-    log(`    ${'改一次版心宽度（整篇重排）'.padEnd(34)}${f(layout.tickWidth)}`);
-    log(`    ${'滚动 120 帧 · 帧间隔中位数'.padEnd(34)}${f(layout.frameMedian)}`);
-    log(`    ${'滚动 120 帧 · 帧间隔 P90'.padEnd(34)}${f(layout.frameP90)}`);
-    log(`    ${'滚动 120 帧 · 帧间隔最大'.padEnd(34)}${f(layout.frameMax)}`);
-    log(`    ${'滚动处理器累计'.padEnd(34)}${f(layout.handlerMs)}`);
+    log('');
+    log('    ▸ 阶段 2 之前的形态：整本一次性物化为 DOM');
+    log(`    ${'建树 innerHTML'.padEnd(36)}${f(layout.built.build)}`);
+    log(`    ${'首次强制布局'.padEnd(36)}${f(layout.built.layout)}   （文档高 ${(layout.built.height / 1000).toFixed(0)} 千 px，${layout.built.nodes} 个 <p>）`);
+    log(`    ${'改一次字号（整篇重排）'.padEnd(36)}${f(layout.wholeFont)}`);
+    log(`    ${'改一次版心宽度（整篇重排）'.padEnd(36)}${f(layout.wholeWidth)}`);
+    log('');
+    log(`    ▸ 阶段 2 之后的形态：窗口内 ${WINDOW_MARGIN * 2 + 1} 段 + 上下垫片`);
+    log(`    ${'建树 innerHTML'.padEnd(36)}${f(layout.windowed.build)}   （DOM 中 ${layout.windowed.nodes} 个节点）`);
+    log(`    ${'实测回填（读 offsetTop）'.padEnd(36)}${f(layout.windowed.measure)}`);
+    log(`    ${'改一次字号（重排窗口）'.padEnd(36)}${f(layout.windowFont)}`);
+    log(`    ${'改一次版心宽度（重排窗口）'.padEnd(36)}${f(layout.windowWidth)}`);
+    log(`    ${'重估全书（主进程 JS，改设置时同批）'.padEnd(36)}${f(estimate.ms)}`);
+    log('');
+    log(`    ▸ 滚动（窗口形态，每帧 ${SCROLL_STEP}px，从窗口顶部起滚）`);
+    log(`    ${`帧间隔中位数（${WINDOW_SCROLL_TICKS} 帧）`.padEnd(36)}${f(layout.frameMedian)}`);
+    log(`    ${'帧间隔 P90'.padEnd(36)}${f(layout.frameP90)}`);
+    log(`    ${'帧间隔最大'.padEnd(36)}${f(layout.frameMax)}`);
+    log(`    ${'滚动处理器累计'.padEnd(36)}${f(layout.handlerMs)}`);
   }
 
   log('');

@@ -78,8 +78,29 @@ h1, h2, h3, p { margin-top: 0; }
 /* 刻意不设 scroll-behavior: smooth。它只影响程序化滚动，而本容器里的程序化滚动
    全部是「跳到远处」——恢复阅读位置、拖目录里的进度滑条——这些场景要的是立刻到位，
    平滑滚动只会让跳转变成一次漫长的动画。滚轮滚动本来就不受这个属性影响。 */
-.reader-scroll { flex: 1; min-height: 0; overflow: auto; }
+/* overflow-anchor: none 是窗口化渲染需要的：上下垫片的高度会随着段落实测高度回填
+   而变化，Chromium 的滚动锚定会把它当成「上方内容变了」并自行修正 scrollTop，
+   与 src/reader.js 里的偏移表换算互相打架。关掉它，滚动位置只由偏移表决定。 */
+/* 正文区外面再套一层定位容器，自绘滚动条压在正文右侧那一条上，
+   高度与滚动区严格一致（工具栏和「文件有变化」提示的高度都不必写进 CSS）。 */
+.reader-viewport { flex: 1; min-height: 0; position: relative; display: flex; }
+/* scrollbar-width / ::-webkit-scrollbar 把原生滚动条整条藏掉，换成下面自绘的一条。
+   原因见 src/reader-scrollbar.js：长书上原生滑块只有零点几像素，抓不住也用不了。 */
+.reader-scroll { flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; scrollbar-width: none; }
+.reader-scroll::-webkit-scrollbar { width: 0; height: 0; }
+/* 用过自绘滚动条之后正文区会拿到焦点（不这么做，键盘翻页就失效了），
+   而浏览器默认的焦点轮廓会把整块正文框起来。按前面的惯例：只给键盘焦点画轮廓。
+   程序化聚焦在 Chromium 里同样会被算作键盘焦点（见 src/reader-scrollbar.js），
+   所以指针路径由 is-pointer-focus 明确压掉，按过键盘之后自动摘掉。 */
+.reader-scroll:focus { outline: none; }
+.reader-scroll:focus-visible { outline: 3px solid #8b9d72; outline-offset: 2px; }
+.reader-scroll.is-pointer-focus { outline: none; }
+.reader-scrollbar { position: absolute; top: 0; right: 0; bottom: 0; width: 15px; }
+.reader-scrollbar-thumb { position: absolute; top: 0; left: 4px; width: 7px; height: 24px; border-radius: 4px; background: var(--reader-muted); opacity: .34; transition: opacity .15s ease; }
+.reader-scrollbar:hover .reader-scrollbar-thumb, .reader-scrollbar.is-dragging .reader-scrollbar-thumb { opacity: .78; }
 .reader-content { width: min(var(--content-width), calc(100% - 56px)); padding: 78px 0 140px; margin: 0 auto; }
+/* 窗口化渲染的占位垫片：撑出未渲染部分的文档高度。高度由 src/reader.js 内联设置。 */
+.reader-spacer { height: 0; }
 .reader-content p { margin: 0 0 var(--paragraph-gap); text-indent: 2em; color: var(--reader-text); font: var(--reader-font-size)/var(--reader-line-height) "Noto Serif SC", "SimSun", serif; letter-spacing: .015em; }
 .reader-shell[data-font="sans"] .reader-content p { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
 .reader-shell[data-indent="false"] .reader-content p { text-indent: 0; }

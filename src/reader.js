@@ -33,11 +33,16 @@ export function parseParagraphs(text, { normalized = false } = {}) {
   return paragraphs;
 }
 
-export function getProgressFromScroll(element, paragraphs) {
+// `offsets` 是 createParagraphWindow() 维护的段落偏移表（段落序号 → 文档坐标，
+// 见下）。给了它就直接查表定位：真实小说的段落长度差异很大，
+// 「比例 × 段落数」的估算会沿全书累积误差，而查表是准的。
+export function getProgressFromScroll(element, paragraphs, offsets = null) {
   const maxScroll = Math.max(1, element.scrollHeight - element.clientHeight);
   const ratio = Math.min(1, Math.max(0, element.scrollTop / maxScroll));
   const paragraphIndex = paragraphs.length
-    ? Math.min(paragraphs.length - 1, Math.max(0, Math.floor(ratio * Math.max(0, paragraphs.length - 1))))
+    ? (offsets
+      ? findParagraphAtOffset(offsets, element.scrollTop)
+      : Math.min(paragraphs.length - 1, Math.max(0, Math.floor(ratio * Math.max(0, paragraphs.length - 1)))))
     : 0;
   const paragraph = paragraphs[paragraphIndex] || { text: '', charOffset: 0 };
   return {
@@ -61,18 +66,198 @@ export function findRestoreIndex(paragraphs, progress = {}) {
   return Math.min(paragraphs.length - 1, Math.floor((progress.ratio || 0) * paragraphs.length));
 }
 
-export function restoreScroll(element, paragraphs, progress) {
-  if (!paragraphs.length) return;
-  const index = findRestoreIndex(paragraphs, progress);
-  requestAnimationFrame(() => {
-    const target = element.querySelector(`[data-paragraph-index="${index}"]`);
-    // 显式 instant。恢复的位置可能在全书任意处（动辄上千万像素），
-    // 一旦这里退回平滑滚动，就是一次持续近一秒、期间界面还在动的连锁动画
-    // （实测 924 ms，而跳变只要 41.5 ms）。.reader-scroll 已经不设 scroll-behavior，
-    // 这里写明取值是为了把「恢复位置必须是跳变」固定在调用处，不依赖样式表的现状。
-    if (target) target.scrollIntoView({ block: 'start', behavior: 'instant' });
-    else element.scrollTop = (progress.ratio || 0) * Math.max(0, element.scrollHeight - element.clientHeight);
-  });
+// ── 段落窗口化渲染 ────────────────────────────────────────────────────────
+//
+// 整本书一次性物化成 DOM 时（实测 13.3 万段、文档高 1130 万 px），任何触及全篇几何的
+// 操作都要 0.5～1.0 s：改一次字号就是一次整篇重排，滑条根本没法跟手。
+//
+// 这里只渲染视口附近的段落：DOM 里始终只有约 2×WINDOW_MARGIN+1 段，屏幕外的部分由
+// 上下两块垫片撑出高度。屏幕外段落的高度先按字数估算，渲染出来之后用实测值替换。
+//
+// 不用 content-visibility: auto（一段 CSS 就能消掉全篇重排）的原因见
+// docs/changes/2026-09-28-阅读性能优化.md：那种做法下屏幕外的段落只有估算高度，
+// scrollIntoView 会落在估算位置，而「记住你读到哪」正是这个应用的核心功能。
+// 改用偏移表换算 scrollTop 之后，滚动到的位置由表决定，与元素是否已渲染无关。
+
+// 视口顶部所在段落前后各保留的段落数。窗口大小为 2×200+1 段。
+const WINDOW_MARGIN = 200;
+// 可见范围距窗口边缘不足这么多段就提前重建，避免贴着边缘滚动时每帧都重建。
+const REBUILD_PAD = 50;
+
+// 与 src/styles.css 的 .reader-content p 保持一致：字号/行高走 font 简写，
+// letter-spacing .015em，段首缩进 2em，段间距是 margin-bottom。
+const LETTER_SPACING_EM = 0.015;
+const INDENT_EM = 2;
+
+const SPACER_TOP = '<div class="reader-spacer" data-spacer="top" aria-hidden="true"></div>';
+const SPACER_BOTTOM = '<div class="reader-spacer" data-spacer="bottom" aria-hidden="true"></div>';
+
+export function escapeHtml(value) {
+  return String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#039;', '"': '&quot;' })[char]);
+}
+
+// 段落高度估算。段落是等宽流式块，占几行只取决于「一行放得下几个字」，
+// 乘行高再加段间距就是整段高度。真实排版里还有标点压缩、中英文混排等差异，
+// 所以这只是估值——渲染出来后会被实测值替换，偏差不会累积。
+export function estimateParagraphHeight(text, layout) {
+  const { fontSize, lineHeight, paragraphSpacing, contentWidth, indent } = layout;
+  const perLine = Math.max(1, Math.floor(contentWidth / (fontSize * (1 + LETTER_SPACING_EM))));
+  // 段首缩进占掉首行开头的一小块，等价于少放两个汉字。
+  const firstLine = Math.max(1, perLine - (indent ? INDENT_EM : 0));
+  const length = text.length;
+  const lines = length <= firstLine ? 1 : 1 + Math.ceil((length - firstLine) / perLine);
+  return lines * fontSize * lineHeight + paragraphSpacing * fontSize;
+}
+
+// 段落序号 → 文档坐标的前缀和。`base` 是第 0 段的文档 y（正文内容盒顶，
+// 含 .reader-content 的 padding-top），把它算进去之后 offsets[i] 就是可以直接
+// 和 scrollTop 比较的文档坐标，不必在每处调用点再补一次基准。
+export function buildOffsetTable(heights, base = 0) {
+  const offsets = new Float64Array(heights.length + 1);
+  let sum = base;
+  for (let i = 0; i < heights.length; i += 1) {
+    offsets[i] = sum;
+    sum += Math.max(0, heights[i]);
+  }
+  offsets[heights.length] = sum;
+  return offsets;
+}
+
+// 段落顶边与滚动位置都取整到设备像素，而偏移表里是浮点数（屏幕外的段落只有
+// 按字数算出来的估算高度，带小数）。半像素的容差用来吸收这点误差：顶边落在
+// 视口上方不到半像素的段落，肉眼已经看不见了，把它算作「视口顶部那一段」
+// 会平白让落点往前漂一段——实测过一次，改字号后整本书往回跳了一段。
+const OFFSET_EPSILON = 0.5;
+
+// 文档坐标 y 落在第几段：最后一个 offsets[i] <= y 的 i（含半像素容差）。
+export function findParagraphAtOffset(offsets, y) {
+  const count = offsets.length - 1;
+  if (count <= 0) return 0;
+  let low = 0;
+  let high = count - 1;
+  let found = 0;
+  const limit = y + OFFSET_EPSILON;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (offsets[mid] <= limit) {
+      found = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return found;
+}
+
+// 窗口管理器。只碰它自己那两块垫片和窗口内的段落，其余状态都在这里。
+export function createParagraphWindow({ scroll, content, paragraphs }) {
+  const count = paragraphs.length;
+  const heights = new Float64Array(count);
+  let layout = { fontSize: 18, lineHeight: 1.9, paragraphSpacing: 0.9, contentWidth: 720, indent: true };
+  let offsets = buildOffsetTable(heights);
+  let start = 0;
+  let end = 0;
+  let rendered = false;
+  // 视口顶部那一段，以及它当时相对视口顶部的像素偏移。重建窗口会改变垫片高度、
+  // 也可能把若干估算高度换成实测值，靠这两个值把落点钉回原处，否则每次重建都会跳。
+  let anchorIndex = 0;
+  let anchorViewportOffset = 0;
+
+  // 正文内容盒顶的文档坐标。刻意不写死 padding 值：那是样式表的事，
+  // 读一次实测值比维护一个和 CSS 同步的常量可靠。
+  function contentBase() {
+    const padTop = parseFloat(getComputedStyle(content).paddingTop) || 0;
+    return content.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop + padTop;
+  }
+
+  // 全书重估。屏幕外的段落没有实测高度，只能按字数和当前排版参数推算；
+  // 改字号或版心宽度会让所有估算同时失效，因此每次排版参数变化都要重跑一遍。
+  function reestimate() {
+    layout.contentWidth = content.clientWidth;
+    for (let i = 0; i < count; i += 1) heights[i] = estimateParagraphHeight(paragraphs[i].text, layout);
+    offsets = buildOffsetTable(heights, contentBase());
+  }
+
+  // 采当前锚点：视口顶部那一段，以及它已经被卷上去的像素数（≤ 0，绝对值小于段高）。
+  //
+  // 位置全部由偏移表算出，不去读元素的实际位置：垫片高度和窗口内段落的实测高度
+  // 都写在这张表里，DOM 与表本来就是一致的。反过来，改字号时样式早就被改掉了，
+  // 那一刻读到的 DOM 位置反映的是「旧 scrollTop + 新字号」，量出来的锚点偏移
+  // 会大得离谱——实测过一次：改完字号整本书往回跳了 101 段。
+  function captureAnchor() {
+    anchorIndex = findParagraphAtOffset(offsets, scroll.scrollTop);
+    anchorViewportOffset = offsets[anchorIndex] - scroll.scrollTop;
+  }
+
+  // targetIndex 给定 → 该段对齐到视口顶部（打开书籍、跳章节、拖进度条）；
+  // 省略 → 保持锚点当前的像素位置（调用方已经采好锚点）。
+  function paint(targetIndex) {
+    if (!count) {
+      content.innerHTML = '';
+      rendered = false;
+      return;
+    }
+    if (Number.isFinite(targetIndex)) {
+      anchorIndex = Math.min(count - 1, Math.max(0, Math.trunc(targetIndex)));
+      anchorViewportOffset = 0;
+    }
+
+    start = Math.max(0, anchorIndex - WINDOW_MARGIN);
+    end = Math.min(count, anchorIndex + WINDOW_MARGIN + 1);
+    const parts = [];
+    for (let i = start; i < end; i += 1) {
+      parts.push(`<p data-paragraph-index="${i}">${escapeHtml(paragraphs[i].text)}</p>`);
+    }
+    content.innerHTML = `${SPACER_TOP}${parts.join('')}${SPACER_BOTTOM}`;
+
+    // 相邻兄弟的 offsetTop 之差就是这一段的真实步距：行高、段间距、标点压缩、
+    // 中英文混排的差异全都在里面，比自己按行数算准。第一次读取会强制一次布局，
+    // 之后同一帧内的读取都用现成结果；窗口只有几百段，整轮下来是毫秒级。
+    const nodes = content.children;
+    for (let i = start; i < end; i += 1) {
+      heights[i] = nodes[i - start + 2].offsetTop - nodes[i - start + 1].offsetTop;
+    }
+    offsets = buildOffsetTable(heights, offsets[0]);
+
+    const base = offsets[0];
+    nodes[0].style.height = `${Math.max(0, offsets[start] - base)}px`;
+    nodes[nodes.length - 1].style.height = `${Math.max(0, offsets[count] - offsets[end])}px`;
+    scroll.scrollTop = Math.max(0, offsets[anchorIndex] - anchorViewportOffset);
+    rendered = true;
+  }
+
+  return {
+    // 排版参数变化后调用：重估全书 → 重渲染窗口 → 保持锚点。窗口里只有几百段，
+    // 所以改一次字号只重排几百段，而不是全篇。
+    setLayout(next) {
+      // 采锚点必须在重估之前：重估把整张表换成新字号下的位置，而 scrollTop 还是
+      // 旧字号下的值，之后再采就采到别的段落上去了。
+      if (rendered) captureAnchor();
+      layout = { ...layout, ...next };
+      reestimate();
+      paint(rendered ? null : anchorIndex);
+    },
+    // 把第 index 段对齐到视口顶部。不再用 scrollIntoView：它要求那一段已经在
+    // DOM 里，而窗口化之后屏幕外的段落按定义就是不在的。
+    scrollToIndex(index) {
+      paint(index);
+    },
+    // 滚动时调用。窗口还盖得住就什么都不做（绝大多数滚动事件都是这种情况）。
+    syncViewport() {
+      if (!rendered || !count) return;
+      const first = findParagraphAtOffset(offsets, scroll.scrollTop);
+      const last = findParagraphAtOffset(offsets, scroll.scrollTop + scroll.clientHeight);
+      if (first - start >= REBUILD_PAD && end - 1 - last >= REBUILD_PAD) return;
+      captureAnchor();
+      paint(null);
+    },
+    // 视口顶部所在段落。查表即可，不必再对 DOM 做二分查找（那会强制布局）。
+    topIndex() {
+      return count ? findParagraphAtOffset(offsets, scroll.scrollTop) : -1;
+    },
+    // 只读的偏移表，交给 getProgressFromScroll 定位用。
+    offsets: () => offsets,
+  };
 }
 
 // ── 章节识别 ──────────────────────────────────────────────────────────────
