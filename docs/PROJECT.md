@@ -5,6 +5,7 @@
 > - 未来计划 → `docs/ROADMAP.md`
 > - 历史变更 → `docs/CHANGELOG.md`
 > - 需求方案与实施记录 → `docs/changes/`
+> - 各版本 Release 正文 → `docs/releases/`
 > - 历史版本快照 → `docs/archive/`
 > - 代码历史 → Git
 

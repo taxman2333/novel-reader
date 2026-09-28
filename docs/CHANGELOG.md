@@ -14,6 +14,8 @@
 > **已发布**：`release/novel-reader-1.0.2-win-x64.zip`（2026-09-28，Windows x64 免安装版，
 > 109,364,143 字节，SHA-256 `3806e629…153423c`）。提交 `5430323` → tag `v1.0.2` → 已推送 →
 > GitHub Release（附件为上述 zip）：https://github.com/taxman2333/novel-reader/releases/tag/v1.0.2
+>
+> Release 正文的仓库副本见 `docs/releases/v1.0.2.md`；`v1.0.0`、`v1.0.1` 两份已一并回填。
 
 ### 核心约束调整
 

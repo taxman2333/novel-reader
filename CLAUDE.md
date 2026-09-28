@@ -6,6 +6,7 @@
 - 未来计划 → `docs/ROADMAP.md`
 - 历史变更 → `docs/CHANGELOG.md`
 - 需求方案与实施记录 → `docs/changes/`
+- 各版本 GitHub Release 正文 → `docs/releases/`
 - 历史版本快照 → `docs/archive/`
 
 ---
@@ -62,6 +63,7 @@
 | `docs/ROADMAP.md` | 未来计划与待开发方向 |
 | `docs/CHANGELOG.md` | 已经完成的版本与功能变更 |
 | `docs/changes/` | 具体需求的变更方案与实施记录 |
+| `docs/releases/` | 已发布的 GitHub Release 正文副本，一版一份，内容与线上一致 |
 | `docs/archive/` | 重要历史版本的完整方案快照 |
 | **Git** | 代码历史 |
 | **GitHub** | 远程代码仓库 |
